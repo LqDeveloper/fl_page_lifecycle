@@ -1,0 +1,36 @@
+
+
+# ── 以下继承自根 .gitignore ────────────────────────────────────────────
+/build/
+/coverage/
+/pubspec.lock
+.dart_tool/
+.flutter-plugins-dependencies
+**/doc/api/
+/package分析报告.md
+
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+migrate_working_dir/
+
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# 给 AI 编码助手的接入约定：面向使用本库的业务项目，不是本库的构建产物，
+# 发布归档里不需要。仓库里保留，用到本库的人可以复制到自己项目。
+docs/ai/
+
+# example 的平台脚手架：使用者跑 example 时 `flutter create .` 会重新生成，
+# 归档里带着只是白占体积。example/lib 与 example/pubspec.yaml 仍然保留，
+# 因为 pub.dev 的 Example 页要靠它们。
+example/android/
+example/ios/

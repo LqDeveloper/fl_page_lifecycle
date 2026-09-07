@@ -1,0 +1,6 @@
+include: package:flutter_lints/flutter.yaml
+
+linter:
+  rules:
+    # The demo intentionally prints lifecycle events to the console.
+    avoid_print: false
