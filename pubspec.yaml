@@ -1,0 +1,32 @@
+name: fl_page_lifecycle
+description: >-
+  Android-style page lifecycle for Flutter: start/resume/pause/stop on any State,
+  plus first frame, route transition animations, app foreground/background and
+  PageView paging.
+version: 0.0.1
+homepage: https://github.com/LqDeveloper/fl_page_lifecycle
+repository: https://github.com/LqDeveloper/fl_page_lifecycle
+issue_tracker: https://github.com/LqDeveloper/fl_page_lifecycle/issues
+
+environment:
+  sdk: ^3.11.5
+  # Dart 3.11.5 首次随 Flutter 3.41.9 stable 发布，因此下限取它。
+  flutter: ">=3.41.9"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  meta: ^1.17.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  #dart pub run import_sorter:main
+  import_sorter: ^4.6.0
+
+import_sorter:
+  emojis: false # Optional, defaults to false
+  comments: false # Optional, defaults to true
+  ignored_files: # Optional, defaults to []
+    - \/lib\/fl_page_lifecycle.dart

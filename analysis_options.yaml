@@ -1,0 +1,14 @@
+include: package:flutter_lints/flutter.yaml
+
+linter:
+  rules:
+    # 这是个对外发布的 package，公共 API 就是对外契约。
+    - public_member_api_docs
+    # 下面五条都不在 flutter_lints 默认集里，恰好覆盖资源泄漏与异步失控这两类
+    # 最贵的故障——而这个库的职责正是管资源生命周期。开启时的实测结果是零违规，
+    # 加上它们不为修 bug，是为了把这条防线固定下来。
+    - cancel_subscriptions
+    - close_sinks
+    - discarded_futures
+    - unawaited_futures
+    - avoid_void_async
