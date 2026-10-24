@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../lifecycle/fl_lifecycle_guard.dart';
 import 'fl_global_event_bus.dart';
 
 /// 在 `State` 中收发全局事件的 mixin，订阅由本 mixin 在 `dispose` 中自动取消。
@@ -58,7 +59,14 @@ mixin FlStateEventBusMixin<S extends StatefulWidget> on State<S> {
       );
       return;
     }
-    _subscriptions.add(_on<T>().listen(onData));
+    // 包 guard 的理由与 `FlAppLifecycleDelegate` 相同：这里的调用方是
+    // `StreamSubscription`，别的订阅者本来就不受影响，包它是为了让异常与本库
+    // 其余回调一样走 [FlutterError.onError]，而不是作为未捕获的异步错误交给
+    // zone——后者少了 library 与 context 两层信息，且使用方在 widget 测试里
+    // 没法用 `tester.takeException()` 消费掉。
+    _subscriptions.add(
+      _on<T>().listen((event) => FlLifecycleGuard.run(() => onData(event))),
+    );
   }
 
   /// 向全局总线发布一个 [T] 类型的事件。

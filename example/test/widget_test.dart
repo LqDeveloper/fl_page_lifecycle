@@ -16,8 +16,11 @@ void main() {
 
     // The named routes in MyApp are what the cards push; a broken route table
     // only shows up once one is actually navigated to.
+    // The list is a lazy ListView, so an entry far enough down is not in the
+    // tree at all — scroll to it rather than assuming it was built. Using
+    // ensureVisible here breaks the moment a new demo entry is added above it.
     final entry = find.text('FlAppLifecycleMixin');
-    await tester.ensureVisible(entry);
+    await tester.scrollUntilVisible(entry, 200);
     await tester.pumpAndSettle();
     await tester.tap(entry);
     await tester.pumpAndSettle();

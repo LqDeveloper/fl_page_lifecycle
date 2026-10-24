@@ -7,7 +7,8 @@
 .dart_tool/
 .flutter-plugins-dependencies
 **/doc/api/
-/package分析报告.md
+/package分析报告*.md
+/lark文档.md
 
 *.class
 *.log
@@ -34,3 +35,5 @@ docs/ai/
 # 因为 pub.dev 的 Example 页要靠它们。
 example/android/
 example/ios/
+
+Claude outputs/

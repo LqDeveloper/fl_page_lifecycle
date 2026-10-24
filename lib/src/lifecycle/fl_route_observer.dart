@@ -17,7 +17,14 @@ import 'lifecycle_route_aware.dart';
 /// )
 /// ```
 ///
-/// 嵌套 `Navigator` 需要各自注册一次，同一个 [instance] 可以复用。
+/// 本类是**单例**，因此只能挂在一个 `Navigator` 上。App 里存在多个同时存活的
+/// `Navigator`（go_router 的 `ShellRoute`、tab 内独立栈等）时，根 `Navigator`
+/// 用它，其余每一个各挂一个 `FlRouteObserverProxy`（见
+/// `fl_route_observer_proxy.dart`）——那里有原因与各框架的写法。
+///
+/// 这里有意写成代码块而不是 dartdoc 链接：本文件不 import 那个文件，
+/// 依赖方向只有 proxy → observer 一条，不成环。
+///
 /// 转场动画回调（`onPageEnterAnimationEnd` 等）不受影响，它们直接监听
 /// `ModalRoute.animation`。
 ///

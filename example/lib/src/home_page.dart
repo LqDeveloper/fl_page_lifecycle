@@ -106,7 +106,9 @@ const _entries = <_MixinEntry>[
     title: 'FlPageLifecycleMixin',
     description:
         '完整页面生命周期：可见性状态机 + App 前后台 + 路由转场动画，'
-        '并保证 start 后必跟 resume、stop 前必补 pause。',
+        '并保证 start 后必跟 resume、stop 前必补 pause。'
+        '页内同时演示路由栈批量操作——popUntil 的中间层会收到一对配对的 '
+        'start/stop 瞬态，而 pushAndRemoveUntil 下被新页盖住的底层不该收到 start。',
     icon: Icons.auto_awesome_motion_outlined,
     path: "/FlPageLifecycleMixin",
   ),
@@ -119,13 +121,44 @@ const _entries = <_MixinEntry>[
     path: "/PageViewPage",
   ),
   _MixinEntry(
-    title: 'FlPageLifecycleMixin-路由栈批量操作',
+    title: 'FlPageIndexScope-IndexedStack',
     description:
-        'popUntil 与 pushAndRemoveUntil 下的可见性判定：'
-        '前者的中间层会收到一对配对的 start/stop 瞬态，'
-        '后者留在栈里被新页盖住的那层不该收到 start。',
-    icon: Icons.layers_outlined,
-    path: "/RouteStackPage",
+        'IndexedStack 把所有子页都 build 出来、只显示一个，被换下去的页收不到任何信号。'
+        '给 Scope 传一个 ValueListenable<int> 即可按页码驱动可见性，'
+        '且换页当场提交，没有 PageView 那道「等停稳」的门禁。',
+    icon: Icons.layers_clear_outlined,
+    path: "/IndexedStackPage",
+  ),
+  _MixinEntry(
+    title: 'FlRouteObserverProxy-多 Navigator',
+    description:
+        '两条同时存活的嵌套路由栈：根 Navigator 挂 FlRouteObserver，'
+        '每个嵌套 Navigator 各挂一个 FlRouteObserverProxy。'
+        '单例挂第二个 Navigator 会触发 Flutter 的断言，proxy 正是为此而生。',
+    icon: Icons.account_tree_outlined,
+    path: "/NestedNavigatorPage",
+  ),
+  _MixinEntry(
+    title: 'FlPageRouteMixin',
+    description:
+        '只关心路由：转发 push / pop / remove / replace 事件与转场动画，'
+        '不区分弹窗、不管 PageView，onRoutePause 也不做守卫。',
+    icon: Icons.alt_route_outlined,
+    path: "/FlPageRouteMixin_one",
+  ),
+
+  _MixinEntry(
+    title: 'FlAppLifecycleMixin',
+    description: '只关心 App 前后台，过滤掉通知栏、来电这类短暂中断。',
+    icon: Icons.phone_iphone_outlined,
+    path: "/FlAppLifecycleMixin",
+  ),
+
+  _MixinEntry(
+    title: 'FlAnimationLifecycleMixin',
+    description: '只关心路由转场动画，把重活推迟到入场动画结束后执行，避免掉帧。',
+    icon: Icons.animation_outlined,
+    path: "/FlAnimationLifecycleMixin",
   ),
   _MixinEntry(
     title: 'FlPageLifecycleView',
@@ -144,30 +177,9 @@ const _entries = <_MixinEntry>[
     path: "/FlPageControllerMixin",
   ),
   _MixinEntry(
-    title: 'FlPageRouteMixin',
-    description:
-        '只关心路由：转发 push / pop / remove / replace 事件与转场动画，'
-        '不区分弹窗、不管 PageView，onRoutePause 也不做守卫。',
-    icon: Icons.alt_route_outlined,
-    path: "/FlPageRouteMixin_one",
-  ),
-
-  _MixinEntry(
-    title: 'FlAppLifecycleMixin',
-    description: '只关心 App 前后台，过滤掉通知栏、来电这类短暂中断。',
-    icon: Icons.phone_iphone_outlined,
-    path: "/FlAppLifecycleMixin",
-  ),
-  _MixinEntry(
     title: 'FlStateEventBusMixin',
     description: '页面内订阅 / 发布全局事件，订阅随 dispose 自动取消；事件全局广播，不可见的页面同样会收到。',
     icon: Icons.campaign_outlined,
     path: "/FlStateEventBusMixin",
-  ),
-  _MixinEntry(
-    title: 'FlAnimationLifecycleMixin',
-    description: '只关心路由转场动画，把重活推迟到入场动画结束后执行，避免掉帧。',
-    icon: Icons.animation_outlined,
-    path: "/FlAnimationLifecycleMixin",
   ),
 ];

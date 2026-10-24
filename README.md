@@ -1,7 +1,8 @@
 # fl_page_lifecycle
 
 Android-style page lifecycle for Flutter: `start` / `resume` / `pause` / `stop` on any `State`,
-plus first frame, route transition animations, app foreground/background and `PageView` paging.
+plus first frame, route transition animations, app foreground/background and index-driven
+containers (`PageView`, `TabBarView`, `IndexedStack`).
 
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -29,12 +30,12 @@ Flutter gives you `initState` and `dispose`. It does not tell you when your page
 polling timers, analytics impressions and animations.
 
 Answering "is my page visible right now?" by hand means combining `RouteAware`,
-`WidgetsBindingObserver`, `ModalRoute.of(context).isCurrent`, a `PageController` listener
+`WidgetsBindingObserver`, `ModalRoute.of(context)!.isCurrent`, a `PageController` listener
 and a first-frame callback — and then getting the edge cases right:
 
 - A dialog covers your page. It is still visible, so you want `pause`, not `stop`.
-  `isCurrent` returns `false` and cannot tell you the difference.
-- `pushAndRemoveUntil` fires `didPop` for a route that is *still* covered by another one.
+  `isCurrent` returns `false` and cannot tell the difference.
+- `pushAndRemoveUntil` fires `didRemove` for a route that is *still* covered by another one.
   A naive `RouteAware` implementation emits a `start` for a page nobody can see.
 - An iOS swipe-back gesture, abandoned halfway, plays a leave animation that never completes.
 - Your page is disposed while paused, so the `resume` you were waiting on never arrives.
@@ -50,9 +51,10 @@ there is nothing to initialize and nothing to release.
   paired and idempotent; popups pause but do not stop
 - Route transition animation callbacks, including cancelled iOS swipe-back
 - App foreground/background, with phone calls and the notification shade filtered out
-- `PageView` / `TabBarView` children driven by page index instead of route changes
+- Children of `PageView`, `TabBarView` and `IndexedStack` driven by page index instead of routes
+- Nested `Navigator`s supported via a forwarding observer
 - Works without touching your class hierarchy — [mixin](#1-page-lifecycle-on-a-state),
-  [wrapper widget](#3-no-mixin-wrap-a-widget-instead) or [plain Dart object](#4-lifecycle-in-a-controller--viewmodel)
+  [wrapper widget](#4-no-mixin--wrap-a-widget-instead) or [plain Dart object](#5-lifecycle-in-a-controller--viewmodel)
 - Page-scoped global event bus whose subscriptions cancel themselves on `dispose`
 - One third-party dependency (`meta`), no platform channels, no code generation
 
@@ -61,75 +63,54 @@ there is nothing to initialize and nothing to release.
 | You want | Use |
 |---|---|
 | The whole thing on a `State` | [`FlPageLifecycleMixin`](#1-page-lifecycle-on-a-state) |
-| The same, for a `PageView` / `TabBarView` child | [`FlPageViewScope`](#2-pages-inside-a-pageview--tabbarview) + `observePageView` |
-| Events without mixing into `State` | [`FlPageLifecycleView`](#3-no-mixin-wrap-a-widget-instead) |
-| Events in a Controller / ViewModel | [`FlPageControllerMixin`](#4-lifecycle-in-a-controller--viewmodel) |
+| The same, for a `PageView` / `TabBarView` / `IndexedStack` child | [`FlPageIndexScope`](#2-pages-inside-an-index-driven-container) + `observePageIndex` |
+| Pages inside a nested `Navigator` | [`FlRouteObserverProxy`](#3-nested-navigators) |
+| Events without mixing into `State` | [`FlPageLifecycleView`](#4-no-mixin--wrap-a-widget-instead) |
+| Events in a Controller / ViewModel | [`FlPageControllerMixin`](#5-lifecycle-in-a-controller--viewmodel) |
 | Only app foreground/background | `FlAppLifecycleMixin` |
 | Only route transition animations | `FlAnimationLifecycleMixin` |
-| Only route events, without popup or `PageView` handling | `FlPageRouteMixin` |
+| Only route events, without popup or page-index handling | `FlPageRouteMixin` |
 
 The last three are standalone. **Do not stack them on top of `FlPageLifecycleMixin`** — it
 already subscribes to the same sources, and you would receive every event twice.
 
 ## Compared with `visibility_detector`
 
-[`visibility_detector`](https://pub.dev/packages/visibility_detector) (`google/flutter.widgets`)
-answers a **geometric** question: how much of this widget's bounding box is inside the viewport?
-This package answers a **navigational** one: is this page the one the user is on? Neither subsumes
-the other, and the comparison below is drawn from `visibility_detector` 0.4.0+2.
+[`visibility_detector`](https://pub.dev/packages/visibility_detector) answers a **geometric**
+question: how much of this widget's bounding box is inside the viewport? This package answers a
+**navigational** one: is this page the one the user is on? Neither subsumes the other.
 
 | | `visibility_detector` | `fl_page_lifecycle` |
 |---|---|---|
-| Unit of observation | Any widget, identified by a unique `Key` | A route page or `PageView` child |
-| What it reports | `visibleFraction`, `visibleBounds`, `size` — continuous | Discrete events: `start` / `resume` / `pause` / `stop` |
+| Unit of observation | Any widget, identified by a unique `Key` | A route page or index-driven container child |
+| What it reports | `visibleFraction`, `visibleBounds` — continuous | Discrete events: `start` / `resume` / `pause` / `stop` |
 | Scrolled out of a `ListView` | Detected — its core use case | **Not** detected |
-| Hidden behind an opaque widget in the same route | Not accounted for — [documented limitation](https://pub.dev/packages/visibility_detector#known-limitations) | **Not** detected |
-| Covered by a dialog / bottom sheet | Not accounted for — same limitation | `pause`, then `resume` when it closes |
+| Covered by a dialog / bottom sheet | Not accounted for | `pause`, then `resume` when it closes |
 | Route push / pop | Not covered | Its core use case |
 | App foreground / background | Not covered | Covered, transient interruptions filtered out |
-| Route transition animations | Not covered | Four callbacks, incl. cancelled iOS swipe-back |
-| Callback timing | Coalesced: at most once per `VisibilityDetectorController.updateInterval`, 500 ms by default | Synchronous with the route or frame event; `PageView` children are batched to frame end |
 | Setup | None — just wrap a widget | Register `FlRouteObserver` on the `Navigator` |
 
-**Which one for which job**
-
-| Scenario | Reach for |
-|---|---|
-| Pause a video / poll / animation when the page is covered or left behind | `fl_page_lifecycle` |
-| Measure page dwell time, or fire a page-view analytics event | `fl_page_lifecycle` |
-| Start and stop work as a `TabBarView` tab is swiped in and out | `fl_page_lifecycle` (`observePageView`) |
-| Refresh stale data when the user comes back from another app | `fl_page_lifecycle` (`observeAppLifecycle`) |
-| Lazy-load an image once it scrolls into the viewport | `visibility_detector` |
-| Count a feed card as *seen* after 50% of it was on screen | `visibility_detector` |
-| Autoplay whichever video card is currently centred in a feed | **both** |
-
-The last row is the common case worth spelling out: use this package to know the feed page is
-resumed at all — otherwise you autoplay on a page the user already navigated away from — and
-`visibility_detector` to know which card is on screen. They observe different things and do not
-conflict.
+**Autoplaying video in a feed needs both**: this package tells you the feed page is resumed at
+all — otherwise you autoplay on a page the user already left — and `visibility_detector` tells
+you which card is on screen. Keep the two signals in separate fields and decide in one place;
+do not call `play()` from both callbacks.
 
 ## Compatibility
 
 | Item | Requirement |
 |---|---|
 | Dart SDK | `^3.11.5` |
-| Flutter | `>=3.41.9` — the stable release that ships Dart 3.11.5 |
+| Flutter | `>=3.41.9` |
 | Platforms | All platforms Flutter supports — no plugin, no platform channels, no `dart:io` |
+
+Platform support is inherited from your Flutter version: this package contains no
+platform-specific implementation of any kind.
 
 ## Installation
 
 ```yaml
 dependencies:
-  fl_page_lifecycle: ^0.0.1
-```
-
-Not published to pub.dev yet — until then, depend on it by git:
-
-```yaml
-dependencies:
-  fl_page_lifecycle:
-    git:
-      url: https://github.com/LqDeveloper/fl_page_lifecycle.git
+  fl_page_lifecycle: ^0.0.4
 ```
 
 ```bash
@@ -138,8 +119,8 @@ flutter pub get
 
 ## Quick start
 
-`FlRouteObserver` **must** be registered on your `Navigator`, otherwise the four route-driven
-events never fire and nothing reports an error. This is the single most common setup mistake.
+Two steps. **Skipping the first one is the single most common problem** — without the observer
+the four visibility callbacks never fire, and nothing is logged or thrown.
 
 ```dart
 import 'package:flutter/material.dart';
@@ -153,7 +134,8 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      navigatorObservers: [FlRouteObserver.instance], // ← required
+      // Step 1 — register the observer. Nested Navigators need their own, see below.
+      navigatorObservers: [FlRouteObserver()],
       home: const DetailPage(),
     );
   }
@@ -166,27 +148,25 @@ class DetailPage extends StatefulWidget {
   State<DetailPage> createState() => _DetailPageState();
 }
 
+// Step 2 — mix it in and override what you need. No init, no dispose.
 class _DetailPageState extends State<DetailPage> with FlPageLifecycleMixin {
   @override
-  void onPageResume() => debugPrint('interactive — start the video');
+  void onPageResume() => debugPrint('visible and interactive');
 
   @override
-  void onPagePause() => debugPrint('covered or leaving — pause the video');
+  void onPagePause() => debugPrint('covered by a dialog, or leaving');
 
   @override
-  Widget build(BuildContext context) => const Scaffold(body: Center(child: Text('Detail')));
+  Widget build(BuildContext context) => const Scaffold();
 }
 ```
-
-Push another route on top and you will see `pause` then `stop`; open a dialog and you will see
-only `pause`.
 
 ## Usage
 
 ### 1. Page lifecycle on a `State`
 
-**When to use it**: the default choice for a route page — you need to know when the page became
-visible or interactive so you can start and stop work that must not run in the background.
+**When to use it**: a route page that has to stop doing something while the user is elsewhere —
+a video, a polling timer, an animation — and resume when they come back.
 
 ```dart
 import 'dart:async';
@@ -194,28 +174,24 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:fl_page_lifecycle/fl_page_lifecycle.dart';
 
-class FeedPage extends StatefulWidget {
-  const FeedPage({super.key});
-
-  @override
-  State<FeedPage> createState() => _FeedPageState();
-}
-
 class _FeedPageState extends State<FeedPage> with FlPageLifecycleMixin {
   Timer? _poll;
+  bool _didLoadHeavy = false;
 
-  // Off by default; each instance saves two global stream subscriptions.
+  // Both switches default to false and must stay constant for the whole lifetime.
   @override
   bool get observeAppLifecycle => true;
 
   @override
   void onPageContextReady(String? routeName, Object? arguments) {
-    debugPrint('route $routeName with $arguments');
+    // Earliest point where routeName / arguments are readable.
+    debugPrint('opened $routeName with $arguments');
   }
 
   @override
-  void onPageResume() =>
-      _poll = Timer.periodic(const Duration(seconds: 5), (_) => _refresh());
+  void onPageResume() {
+    _poll = Timer.periodic(const Duration(seconds: 5), (_) => _refresh());
+  }
 
   @override
   void onPagePause() {
@@ -224,61 +200,60 @@ class _FeedPageState extends State<FeedPage> with FlPageLifecycleMixin {
   }
 
   @override
-  void onAppBackground() => _poll?.cancel();
-
-  void _refresh() {}
+  void onPageEnterAnimationEnd() {
+    if (_didLoadHeavy) return; // may fire twice — see Notes
+    _didLoadHeavy = true;
+    _decodeLargeImages();
+  }
 
   @override
-  Widget build(BuildContext context) => const Scaffold(body: Text('Feed'));
+  void onAppForeground() => _refresh(); // really came back, not just a notification shade
+
+  @override
+  void onPageDispose() => _poll?.cancel();
+
+  void _refresh() {}
+  void _decodeLargeImages() {}
+
+  @override
+  Widget build(BuildContext context) => const Scaffold();
 }
 ```
 
-**Switches** (override as getters; each must return a constant — a debug assert enforces it)
+**Switches**
 
-| Getter | Type | Default | Meaning |
+| Name | Type | Default | Description |
 |---|---|---|---|
-| `observePageView` | `bool` | `false` | Drive visibility from `FlPageViewScope` page index instead of route changes |
-| `observeAppLifecycle` | `bool` | `false` | Deliver the five app-level events; costs two global stream subscriptions per instance |
+| `observePageIndex` | `bool` | `false` | Drive visibility by page index instead of routes. Requires an enclosing `FlPageIndexScope` |
+| `observeAppLifecycle` | `bool` | `false` | Subscribe to app foreground/background. Costs two global stream subscriptions per instance |
 
-**State getters** (readable at any time, no subscription needed)
+**Readable at any time**
 
-| Getter | Type | Meaning |
-|---|---|---|
-| `isPageAppeared` | `bool` | Visible: `onPageStart` fired and `onPageStop` has not |
-| `isPageResumed` | `bool` | Interactive: `onPageResume` fired and `onPagePause` has not |
-| `isForeground` | `bool` | The app is in the foreground |
-| `isCurrent` | `bool` | This page is the top route of its `Navigator` (live, not cached) |
-| `routeName` / `arguments` | `String?` / `Object?` | From `RouteSettings`; available from `onPageContextReady` onwards |
-| `isInPageView` / `pageIndex` / `currentPageIndex` / `pageViewDepth` | `bool` / `int` | `PageView` position, see below |
+`isPageAppeared`, `isPageResumed`, `isForeground`, `routeName`, `arguments`, `isCurrent`,
+`isInPageScope`, `pageIndex`, `currentPageIndex`, `pageScopeDepth`.
 
 **Notes**
 
-- Use `isPageAppeared` for "is my page visible", **not** `isCurrent` — a dialog on top makes
-  `isCurrent` false while the page is still fully visible.
-- `onPagePostFrame` always fires before the first `onPageStart`, so you can measure a
-  `RenderObject` there and use the size in `onPageStart`.
-- Overriding `onLifecycleStateChanged` requires calling `super` (`@mustCallSuper`). So does
-  overriding `appLifecycleChanged` — its body is what dispatches `onAppResume` / `onAppInactive` /
-  `onAppPause`, so dropping `super` silently kills those three.
+- Use `isPageAppeared` to ask "is this page visible" — **not** `isCurrent`, which is `false`
+  while a dialog is on top even though the page is fully visible.
+- Both switches are read early and must be compile-time constants. Returning
+  `widget.something` from them trips an assertion in debug.
+- `onPageEnterAnimationEnd` can fire twice: an abandoned iOS swipe-back drives the animation
+  `reverse → forward → completed`. Anything with side effects there must be idempotent.
 
-### 2. Pages inside a `PageView` / `TabBarView`
+### 2. Pages inside an index-driven container
 
-**When to use it**: children of a `PageView` are all built and kept alive, so route events say
-nothing about which one is on screen. Wrap them in `FlPageViewScope` and visibility follows the
-page index instead.
+**When to use it**: children of a `PageView`, `TabBarView` or `IndexedStack`. They all stay
+alive when they scroll out of view, so nothing tells them they went away — `dispose` does not
+run and the route did not change.
+
+Wrap the children once on the container side; the page index is injected for you.
 
 ```dart
 import 'package:flutter/material.dart';
 import 'package:fl_page_lifecycle/fl_page_lifecycle.dart';
 
-class HomeTabs extends StatefulWidget {
-  const HomeTabs({super.key});
-
-  @override
-  State<HomeTabs> createState() => _HomeTabsState();
-}
-
-class _HomeTabsState extends State<HomeTabs> {
+class _TabsPageState extends State<TabsPage> {
   final _controller = PageController();
 
   @override
@@ -289,81 +264,140 @@ class _HomeTabsState extends State<HomeTabs> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: PageView(
+    return PageView(
+      controller: _controller,
+      children: FlPageIndexScope.wrapChildren(
         controller: _controller,
-        // Injects each child's page index; children need no pageIndex of their own.
-        children: FlPageViewScope.wrapChildren(
-          controller: _controller,
-          children: const [FeedTab(), Center(child: Text('Profile'))],
-        ),
+        children: const [HomeTab(), FeedTab(), MineTab()],
       ),
     );
   }
 }
 
-class FeedTab extends StatefulWidget {
-  const FeedTab({super.key});
-
-  @override
-  State<FeedTab> createState() => _FeedTabState();
-}
-
 class _FeedTabState extends State<FeedTab> with FlPageLifecycleMixin {
+  // Without this the child is treated as an ordinary page: it starts on the
+  // first frame and never stops again.
   @override
-  bool get observePageView => true; // ← without this the tab starts on its first frame
+  bool get observePageIndex => true;
 
   @override
-  void onPageStart() => debugPrint('feed tab scrolled into view');
+  void onPageStart() => debugPrint('this tab is now the current page');
 
   @override
-  void onPageStop() => debugPrint('feed tab scrolled away');
+  void onPageStop() => debugPrint('swiped away');
 
   @override
-  void onPageViewChanged(int from, int to) => debugPrint('page $from -> $to');
+  void onPageIndexChanged(int from, int to) => debugPrint('$from -> $to');
 
   @override
-  Widget build(BuildContext context) => const Center(child: Text('Feed'));
+  Widget build(BuildContext context) => const SizedBox.shrink();
 }
 ```
 
-**`FlPageViewScope` statics**
+`IndexedStack` has no controller, so pass the `ValueListenable<int>` that drives its `index` —
+the same object feeds both, so they cannot disagree:
 
-| Method | Signature | Purpose |
+```dart
+final _index = ValueNotifier<int>(0);
+late final _pages = FlPageIndexScope.wrapChildren(
+  controller: _index,
+  children: const [HomeTab(), FeedTab(), MineTab()],
+);
+
+void onTap(int i) => _index.value = i;
+
+@override
+Widget build(BuildContext context) => ValueListenableBuilder<int>(
+  valueListenable: _index,
+  builder: (context, index, _) => IndexedStack(index: index, children: _pages),
+);
+```
+
+**Statics on `FlPageIndexScope`**
+
+| Name | Signature | Description |
 |---|---|---|
-| `wrapChildren` | `({required Listenable controller, required List<Widget> children}) → List<Widget>` | Wrap a fixed child list; index becomes the page index |
-| `wrapItemBuilder` | `({required Listenable controller, required NullableIndexedWidgetBuilder builder}) → NullableIndexedWidgetBuilder` | Same, for `PageView.builder` |
-| `indexOf` | `(Listenable controller) → int?` | Current index, `null` while not yet resolvable |
+| `wrapChildren` | `({required Listenable controller, required List<Widget> children}) → List<Widget>` | Wrap a child list; index = position |
+| `wrapItemBuilder` | `({required Listenable controller, required NullableIndexedWidgetBuilder builder}) → NullableIndexedWidgetBuilder` | Wrap `PageView.builder`'s `itemBuilder` |
+| `depthOf` | `(BuildContext) → int` | Scope nesting depth; outermost `0`, `-1` when not in a scope |
+| `indexOf` | `(Listenable) → int?` | Current index of a controller; `null` when not yet available |
+| `initialIndexOf` | `(Listenable) → int` | Fallback index used before `indexOf` is available |
+| `listenableOf` | `(Listenable) → Listenable` | The object to subscribe to for paging notifications |
 
-`initialIndexOf`, `listenableOf` and `depthOf` cover the lower-level cases. The constructor takes
-`pageIndex`, `controller` and `child` directly if you are not using the helpers; it carries an
-assert and is therefore **not** `const`, so `const FlPageViewScope(...)` will not compile.
-`controller` accepts a `PageController` or a `TabController` only — anything else trips an
-assert. Scopes nest,
-and a child is visible only when every ancestor scope is also on its host's page.
+**Notes**
 
-### 3. No mixin — wrap a widget instead
+- `controller` accepts `PageController`, `TabController` or `ValueListenable<int>`; anything
+  else trips an assertion in debug.
+- **Scrolling containers commit visibility only once they settle.** `animateToPage(0 → 4)`
+  sweeps across the pages in between, but they emit nothing at all — otherwise analytics would
+  record three phantom page views. `jumpToPage` creates no scroll activity and commits at once.
+  `IndexedStack` has no intermediate state and also commits immediately.
+- **When nesting, wrap every layer.** Wrapping only the outer one is not an error: the inner
+  child silently binds to the outer scope and never stops when its own container pages away.
+  Debug builds print a warning once.
 
-**When to use it**: the page is a `StatelessWidget`, the `State` already has a mixin chain you
-would rather not extend, or you only want to instrument one subtree (an impression tracker on a
-card, for instance).
+### 3. Nested `Navigator`s
+
+**When to use it**: go_router's `ShellRoute` / `StatefulShellRoute`, auto_route's nested
+routers, or a hand-written per-tab stack — anything where more than one `Navigator` is alive
+at the same time.
+
+`FlRouteObserver` is a singleton, and Flutter's `Navigator` asserts that one observer instance
+is bound to at most one `NavigatorState`. Give the root the singleton and every nested
+`Navigator` its own proxy, which forwards into the same subscription table:
 
 ```dart
 import 'package:flutter/material.dart';
 import 'package:fl_page_lifecycle/fl_page_lifecycle.dart';
 
-class ProductPage extends StatelessWidget {
-  const ProductPage({super.key});
+class TabStack extends StatelessWidget {
+  const TabStack({super.key, required this.builder});
+
+  final WidgetBuilder builder;
+
+  @override
+  Widget build(BuildContext context) {
+    return Navigator(
+      // A fresh proxy per Navigator. Reusing one trips the same assertion.
+      observers: [FlRouteObserverProxy()],
+      onGenerateRoute: (settings) =>
+          MaterialPageRoute<void>(settings: settings, builder: builder),
+    );
+  }
+}
+```
+
+With go_router the shape is the same — `GoRouter(observers: [FlRouteObserver()])` for the root
+and `ShellRoute(observers: [FlRouteObserverProxy()])` for each shell.
+
+**Notes**
+
+- A page only tracks **its own** `Navigator`. When an outer route covers the whole nested
+  `Navigator`, the inner page is not notified. If you need that, put a
+  `FlPageLifecycleView` around the nested `Navigator` and forward from there.
+- `showDialog` defaults to `useRootNavigator: true`. Pass `false` if you want the pages in the
+  nested stack to receive `onPagePause`.
+
+### 4. No mixin — wrap a widget instead
+
+**When to use it**: the page is a `StatelessWidget`, its `State` already has the mixins it can
+take, or you only want to observe one subtree.
+
+```dart
+import 'package:flutter/material.dart';
+import 'package:fl_page_lifecycle/fl_page_lifecycle.dart';
+
+class DetailPage extends StatelessWidget {
+  const DetailPage({super.key});
 
   @override
   Widget build(BuildContext context) {
     return FlPageLifecycleView(
       onStateChanged: (context, state) {
-        if (state == FlLifecycleState.onPageResume) debugPrint('visible & interactive');
+        if (state == FlLifecycleState.onPageResume) debugPrint('resumed');
       },
-      onRouteParam: (context, routeName, arguments) =>
-          debugPrint('opened $routeName with $arguments'),
-      child: const Scaffold(body: Center(child: Text('Product'))),
+      onRouteParam: (context, routeName, arguments) => debugPrint('$routeName'),
+      child: const Scaffold(),
     );
   }
 }
@@ -371,27 +405,27 @@ class ProductPage extends StatelessWidget {
 
 **Parameters**
 
-| Parameter | Type | Default | Meaning |
+| Parameter | Type | Default | Description |
 |---|---|---|---|
-| `child` | `Widget` | required | Observed subtree, returned as-is by `build` — no extra layout node |
+| `observePageIndex` | `bool` | `false` | Same meaning as on the mixin |
+| `observeAppLifecycle` | `bool` | `false` | Same meaning as on the mixin |
 | `onStateChanged` | `FlPageLifecycleCallback?` | `null` | Every `FlLifecycleState` event |
-| `onRouteParam` | `FlPageRouteParamCallback?` | `null` | Route name and arguments once available |
-| `onPageViewChanged` | `FlPageViewChangedCallback?` | `null` | Page index changed, `(from, to)` |
-| `observePageView` | `bool` | `false` | Same as the mixin's switch |
-| `observeAppLifecycle` | `bool` | `false` | Same as the mixin's switch |
+| `onRouteParam` | `FlPageRouteParamCallback?` | `null` | Route name and arguments, once ready |
+| `onPageIndexChanged` | `FlPageIndexChangedCallback?` | `null` | Page index changed, `(from, to)` |
+| `child` | `Widget` | required | Returned as-is; adds no layout node |
 
-Each instance is a full `FlPageLifecycleMixin` internally: one route subscription, one first-frame
-callback, plus two global stream subscriptions when `observeAppLifecycle` is on. A handful per
-page is free; hundreds of them in a list is worth thinking about.
+**Notes**
 
-### 4. Lifecycle in a Controller / ViewModel
+- Do not look up `InheritedWidget`s from the callback `context` during `onPageInit` or
+  `onPageDispose`; the `State` is not attached yet, or is being unmounted.
+- Each instance is a full state machine. A handful per page is free; a few hundred in a list
+  is not, especially with `observeAppLifecycle: true` (two global subscriptions each).
 
-**When to use it**: the code that reacts to the lifecycle lives outside the widget tree — a
-Controller, Presenter, ViewModel or Service.
+### 5. Lifecycle in a Controller / ViewModel
 
-`FlPageControllerMixin` **subscribes to nothing**. It is an entry point plus a set of template
-callbacks; the page has to forward events into it. If no callback ever fires, check the
-forwarding first.
+**When to use it**: the code that starts and stops work lives outside the widget tree.
+
+`FlPageControllerMixin` **subscribes to nothing** — the page has to forward events into it.
 
 ```dart
 import 'package:flutter/material.dart';
@@ -399,17 +433,14 @@ import 'package:fl_page_lifecycle/fl_page_lifecycle.dart';
 
 class DetailController with FlPageControllerMixin {
   @override
-  void onPageResume() => debugPrint('poll started, route=$routeName');
+  void onPageResume() => debugPrint('start polling');
 
   @override
-  void onPagePause() => debugPrint('poll stopped');
-}
+  void onPagePause() => debugPrint('stop polling');
 
-class DetailPage extends StatefulWidget {
-  const DetailPage({super.key});
-
+  // Note the signature: BuildContext?, not (String?, Object?).
   @override
-  State<DetailPage> createState() => _DetailPageState();
+  void onPageContextReady(BuildContext? context) => debugPrint('$routeName');
 }
 
 class _DetailPageState extends State<DetailPage> with FlPageLifecycleMixin {
@@ -427,189 +458,158 @@ class _DetailPageState extends State<DetailPage> with FlPageLifecycleMixin {
   }
 
   @override
-  Widget build(BuildContext context) => const Scaffold(body: Text('Detail'));
+  Widget build(BuildContext context) => const Scaffold();
 }
 ```
 
-Forwarding from `FlPageLifecycleView.onStateChanged` works identically.
+**Notes**
 
-**Note**: timing and idempotency are entirely determined by whoever forwards the events. Drive
-`onLifecycleChanged` yourself, bypassing `FlPageLifecycleMixin`, and guarantees like "start is
-always followed by resume" no longer hold. The mixin holds no subscriptions and therefore has no
-`dispose` — release your own resources in `onPageDispose`.
+- Two forwards are required (`onLifecycleChanged` and `setupRouteInfo`); page index changes
+  need a third, since they are not part of `FlLifecycleState`.
+- The mixin holds no subscription and therefore has no `dispose` — release your own resources
+  in `onPageDispose`.
 
-### 5. Page-scoped global events
+### 6. Page-scoped global events
 
-**When to use it**: two pages need to talk without a shared parent — a settings page changing a
-theme, a cart badge reacting to a purchase.
+**When to use it**: one page has to react to something that happened on another — a login, a
+cart update — without wiring a stream through the tree.
 
 ```dart
 import 'package:flutter/material.dart';
 import 'package:fl_page_lifecycle/fl_page_lifecycle.dart';
 
-/// Events are plain classes, distinguished by type. Nothing to register.
-class CartChanged {
-  const CartChanged(this.count);
-
-  final int count;
+class LoginSuccess {
+  const LoginSuccess(this.userId);
+  final String userId;
 }
 
-class CartBadge extends StatefulWidget {
-  const CartBadge({super.key});
-
-  @override
-  State<CartBadge> createState() => _CartBadgeState();
-}
-
-class _CartBadgeState extends State<CartBadge> with FlStateEventBusMixin {
-  int _count = 0;
-
+class _HeaderState extends State<Header> with FlStateEventBusMixin {
   @override
   void initState() {
     super.initState();
-    // No StreamSubscription to keep — cancelled automatically in dispose.
-    observeEvent<CartChanged>((event) => setState(() => _count = event.count));
+    // Pass a method reference, not a closure literal — see Notes.
+    observeEvent<LoginSuccess>(_onLogin);
   }
 
-  void _add() => dispatchEvent(CartChanged(_count + 1));
+  void _onLogin(LoginSuccess event) => setState(() {});
 
   @override
-  Widget build(BuildContext context) =>
-      TextButton(onPressed: _add, child: Text('Cart $_count'));
+  Widget build(BuildContext context) => const SizedBox.shrink();
 }
+
+// Anywhere else:
+void publish() => FlGlobalEventBus.dispatchEvent(const LoginSuccess('u1'));
 ```
 
-Call `observeEvent` once, from `initState`. Called from `build` or `onPageResume` the subscription
-count would grow with every rebuild, so a repeat registration of the same `(T, onData)` pair is
-**ignored** and trips a debug assert. Only method references dedupe — a closure literal written at
-the call site is a fresh object every time and cannot be recognised as a repeat.
+**Notes**
 
-Events are broadcast globally: a page that is currently stopped still receives them. If that is
-not what you want, gate the handler on `isPageAppeared`.
-
-Outside a `State`, use the statics on `FlGlobalEventBus` — `observeEvent<T>()` returns a
-`Stream<T>` you cancel yourself, and `dispatchEvent<T>(T event)` publishes. Swap the backing
-implementation with `FlGlobalEventBus.configure(FlEventBus())` or your own `FlIEventBus`.
+- Call `observeEvent` **once**, in `initState`. Calling it from `build` grows the subscription
+  count on every rebuild. The mixin rejects a duplicate `(type, callback)` pair and asserts in
+  debug, but only a method reference can be recognised — a fresh closure literal cannot.
+- `FlGlobalEventBus.destroy()` is process-wide. Never call it from `State.dispose`; every other
+  live subscription dies with it, silently. The mixin already cancels its own on `dispose`.
 
 ## Event timing
 
-The full contract lives in the `FlLifecycleState` dartdoc — it documents, per event, exactly when
-it fires and when it does not. The common sequences:
+`FlLifecycleState` has 18 values and its dartdoc is the authoritative timing contract. The
+common sequences:
 
 ```
-push a route          onPageInit → onPageContextReady
-                      → onPageEnterAnimationStart (not guaranteed, see below)
-                      → onPagePostFrame
-                      → onPageStart → onPageResume → onPageEnterAnimationEnd
+push a page      onPageInit → onPageContextReady → onPagePostFrame
+                 → onPageStart → onPageResume → onPageEnterAnimationEnd
 
-covered by a route    onPagePause → onPageStop  ...  onPageStart → onPageResume
-covered by a dialog   onPagePause               ...  onPageResume
-
-pop itself            onPageLeaveAnimationStart → onPagePause → onPageStop
-                      → onPageLeaveAnimationEnd → onPageDispose
-
-iOS swipe-back,       onPageLeaveAnimationStart → onPageEnterAnimationStart
-abandoned halfway     → onPageEnterAnimationEnd          (no pause, no stop)
+covered by page  onPagePause → onPageStop   ...back...   onPageStart → onPageResume
+covered by popup onPagePause               ...closed...  onPageResume
+pop itself       onPageLeaveAnimationStart → onPagePause → onPageStop
+                 → onPageLeaveAnimationEnd → onPageDispose
 ```
 
-The app's first page (`home`) has no transition, so neither enter-animation event fires.
-`onPageDispose` is always the last event.
+Four guarantees the state machine keeps for you:
 
-`onPageReassemble` sits outside these sequences: it fires on hot reload only (it is gated on
-`kDebugMode`), so treat it as a debug-time hook rather than part of the contract.
+- **Paired** — a `start` is always followed by a `stop`; `dispose` emits the missing half.
+- **Idempotent** — repeated triggers are swallowed; you never get two `start`s in a row.
+- **Ordered** — `onPagePostFrame` always precedes the first `onPageStart`, so sizes measured
+  there are usable in `start`.
+- **Popups pause, they do not stop** — the page is still on screen.
 
-For a `PageView` child, `start` and `stop` arrive at **frame end** rather than synchronously.
-Within one frame every hide fires before every show, regardless of the order the children
-registered, and a page that flips away and back inside one batch emits nothing at all — so two
-children never both believe they are visible.
+App events come in two flavours: `onAppResume` / `onAppInactive` / `onAppPause` are the raw
+`AppLifecycleState`, while `onAppForeground` / `onAppBackground` are filtered — a pulled-down
+notification shade or an incoming call does not trigger them.
 
 ## API reference
 
-| Name | Kind | Purpose | More |
+| Name | Kind | Purpose | See |
 |---|---|---|---|
-| `FlPageLifecycleMixin` | mixin on `State` | Full page lifecycle — the main entry point | [Usage](#1-page-lifecycle-on-a-state) |
-| `FlPageViewScope` | widget | Pushes page index + controller down to `PageView` children | [Usage](#2-pages-inside-a-pageview--tabbarview) |
-| `FlPageLifecycleView` | widget | Same events as the mixin, delivered via callbacks | [Usage](#3-no-mixin-wrap-a-widget-instead) |
-| `FlPageControllerMixin` | mixin | Receives forwarded events in a non-widget class | [Usage](#4-lifecycle-in-a-controller--viewmodel) |
-| `FlStateEventBusMixin` | mixin on `State` | `observeEvent` / `dispatchEvent`, auto-cancelled on `dispose` | [Usage](#5-page-scoped-global-events) |
-| `FlRouteObserver` | `NavigatorObserver` | Translates route changes into start/resume/pause/stop. Register `FlRouteObserver.instance` | [Quick start](#quick-start) |
-| `FlLifecycleState` | enum | The 18 lifecycle events, plus `isPageResume` / `isPagePause` / `isAppEvent` | [Timing](#event-timing) |
-| `FlAppLifecycleMixin` | mixin on `State` | App foreground/background only: `onAppForeground`, `onAppBackground`, `appLifecycleChanged`, `isForeground`, `hasInit` | — |
-| `FlAnimationLifecycleMixin` | mixin on `State` | Transition animations only: the four `onPageEnter/LeaveAnimation*` callbacks | — |
-| `FlPageRouteMixin` | mixin on `State` | Route events only — one-shot `onRouteStart` / `onRouteStop` and a pause/stop backfill on `dispose`, but no popup or `PageView` awareness and `onRoutePause` is unguarded: `onRouteStart` / `onRouteResume` / `onRoutePause` / `onRouteStop`, plus `modalRoute`, `hasRoute` | — |
-| `FlLifecycleManager` | singleton | App foreground/background source: `instance`, `isForeground`, `stream`, `lifecycle`, `listen()`, `cancel()` | — |
-| `FlGlobalEventBus` | static API | Global bus access: `observeEvent<T>()`, `dispatchEvent<T>()`, `configure()`, `destroy()` | [Usage](#5-page-scoped-global-events) |
-| `FlIEventBus` | abstract class | Bus interface: `on<T>()`, `fire()`, `destroy()` — implement to swap in your own | — |
-| `FlEventBus` | class | Default `FlIEventBus`: one broadcast stream. `FlEventBus({sync})`, `FlEventBus.customController()` | — |
-| `FlPageLifecycleCallback` | typedef | `void Function(BuildContext, FlLifecycleState)` | [Usage](#3-no-mixin-wrap-a-widget-instead) |
-| `FlPageRouteParamCallback` | typedef | `void Function(BuildContext, String?, Object?)` | [Usage](#3-no-mixin-wrap-a-widget-instead) |
-| `FlPageViewChangedCallback` | typedef | `void Function(BuildContext, int from, int to)` | [Usage](#3-no-mixin-wrap-a-widget-instead) |
-
-Lifecycle callbacks are `@protected` — override them in your class, never call them directly.
-The exceptions are on `FlPageControllerMixin`, whose `onLifecycleChanged`, `setupRouteInfo` and
-`onPageViewChanged` are public because the page has to call them. Note also that its
-`onPageContextReady` takes a `BuildContext?`, not the `(String? routeName, Object? arguments)` the
-`State` mixins pass, and that `onPageViewChanged` is not dispatched by `onLifecycleChanged` — the
-page must forward it explicitly.
+| `FlPageLifecycleMixin` | mixin | The full page lifecycle state machine | [1](#1-page-lifecycle-on-a-state) |
+| `FlRouteObserver` | class | Translates `Navigator` changes into page events. **Must be registered** | [Quick start](#quick-start) |
+| `FlRouteObserverProxy` | class | Forwarding observer for nested `Navigator`s | [3](#3-nested-navigators) |
+| `FlLifecycleState` | enum | The 18 lifecycle events; `isPageResume` / `isPagePause` / `isAppEvent` helpers | [Event timing](#event-timing) |
+| `FlPageIndexScope` | widget | Pushes the page index down to container children | [2](#2-pages-inside-an-index-driven-container) |
+| `FlPageLifecycleView` | widget | Same events via callbacks, no mixin | [4](#4-no-mixin--wrap-a-widget-instead) |
+| `FlPageLifecycleCallback` | typedef | `(BuildContext, FlLifecycleState) → void` | [4](#4-no-mixin--wrap-a-widget-instead) |
+| `FlPageRouteParamCallback` | typedef | `(BuildContext, String?, Object?) → void` | [4](#4-no-mixin--wrap-a-widget-instead) |
+| `FlPageIndexChangedCallback` | typedef | `(BuildContext, int, int) → void` | [4](#4-no-mixin--wrap-a-widget-instead) |
+| `FlPageControllerMixin` | mixin | Receive forwarded events in a plain Dart object | [5](#5-lifecycle-in-a-controller--viewmodel) |
+| `FlPageRouteMixin` | mixin | Route events and transition animations only | — |
+| `FlAppLifecycleMixin` | mixin | App foreground/background only | — |
+| `FlAnimationLifecycleMixin` | mixin | Route transition animations only | — |
+| `FlLifecycleManager` | class | App foreground/background singleton: `isForeground`, `stream`, `lifecycle`, `listen()`, `cancel()` | [Notes](#notes--caveats) |
+| `FlStateEventBusMixin` | mixin | `observeEvent` / `dispatchEvent` in a `State`, auto-cancelled | [6](#6-page-scoped-global-events) |
+| `FlGlobalEventBus` | class | Static access point: `observeEvent`, `dispatchEvent`, `configure`, `destroy` | [6](#6-page-scoped-global-events) |
+| `FlEventBus` | class | Default `FlIEventBus` implementation; `FlEventBus(sync: true)` dispatches synchronously | [6](#6-page-scoped-global-events) |
+| `FlIEventBus` | class | Bus interface — implement it to inject a mock in tests | [6](#6-page-scoped-global-events) |
 
 ## Dependencies
 
-| Package | Constraint | What for | Used in |
+| Dependency | Constraint | Purpose | Used in |
 |---|---|---|---|
-| `meta` | `^1.17.0` | `@internal` / `@protected` / `@mustCallSuper` / `@nonVirtual` annotations that mark the public surface | `lib/src/lifecycle/fl_route_observer.dart:3`, `lib/src/mixin/fl_page_route_mixin.dart:3`, `lib/src/delegate/*.dart` |
+| `meta` | `^1.17.0` | `@internal` / `@nonVirtual` annotations that keep internal members out of the public contract | `lib/src/lifecycle/fl_route_observer.dart`, `lib/src/mixin/fl_page_route_mixin.dart`, and four more |
 
-That is the only third-party dependency — no state management library, no code generation, no
-platform channels.
+That is the only third-party dependency. No platform channels, no code generation, no
+transitive UI packages.
 
 ## Notes & caveats
 
-**Register `FlRouteObserver`, or nothing route-driven works.** Missing it produces no exception —
-`start` / `resume` / `pause` / `stop` simply never arrive (debug builds print a hint once).
-A nested `Navigator` needs its own registration; the same `instance` can be reused.
+**Register `FlRouteObserver`, or nothing route-driven works.** Missing it produces no
+exception — the four visibility callbacks simply never fire, while the transition-animation
+callbacks keep working because they listen to `ModalRoute.animation` directly. "Animations yes,
+visibility no" is the diagnostic signature. Debug builds print a hint once per process.
 
-**`isCurrent` is not visibility.** A `PopupRoute` on top — dialog, bottom sheet, popup menu —
-leaves the page fully visible, so only `pause` is emitted. Use `isPageAppeared`.
+**Do not stack the entry-point mixins.** `FlPageLifecycleMixin`, `FlPageRouteMixin`,
+`FlAppLifecycleMixin` and `FlAnimationLifecycleMixin` subscribe to the same sources and declare
+overlapping members. Stacking them delivers some events twice and leaves one state machine
+dead. `FlStateEventBusMixin` is the exception and composes with any of them.
 
-**`onPageContextReady` may never fire.** It requires `ModalRoute.of(context)` to be non-null. For
-a widget that is not inside any route, what goes silent is only the *route-driven* half: the
-`start` / `resume` / `pause` / `stop` a covering or uncovering route would have produced, plus both
-transition-animation events. The first frame's `onPageStart` / `onPageResume` and the
-`onPagePause` / `onPageStop` backfilled on `dispose` still fire — the first-frame visibility gate
-only applies once a `ModalRoute` has been resolved — as do `onPageInit`, `onPagePostFrame` and
-`onPageDispose`. So the mixin is still worth using on a routeless widget: you get a paired
-start/stop over that widget's own lifetime.
+**`onPageEnterAnimationEnd` can fire twice.** An abandoned iOS swipe-back runs the animation
+`reverse → forward → completed`. Network calls or analytics started there must be idempotent.
+Likewise `onPageLeaveAnimationStart` does **not** mean the page will actually leave — put
+irreversible work in `onPageLeaveAnimationEnd` or `onPageDispose`.
 
-**`onPageEnterAnimationStart` usually does not fire on first entry.** The animation listener is
-bound at `onPageContextReady`, by which time the entry transition has already started. Use
-`onPageContextReady` for "the page is appearing". What you do receive is the animation reversing —
-an abandoned iOS swipe-back.
+**Route info is null by the time `onPageDispose` runs.** The mixin re-emits `onPagePause` /
+`onPageStop` *before* unsubscribing, so `routeName` and `arguments` are still readable there,
+but not in `onPageDispose`. Read them earlier, or cache them in `onPageContextReady`.
 
-**`onPageLeaveAnimationStart` does not mean the page will leave.** Abandon an iOS swipe-back and
-it is followed by `onPageEnterAnimationStart` → `onPageEnterAnimationEnd`, never
-`onPageLeaveAnimationEnd`. Put irreversible work in `onPageLeaveAnimationEnd` or `onPageDispose`.
+**Exceptions thrown from your callbacks do not propagate.** They are reported to
+`FlutterError.onError` under the library name `fl_page_lifecycle` so that one page's failure
+cannot break another page's events or leak a subscription. Wrap fallible work
+(analytics upload, network) in your own `try`/`catch`.
 
-**Both switches must be constant per instance.** `observePageView` and `observeAppLifecycle` are
-read once in `initState`; flipping one mid-life leaves the visibility state machine inconsistent.
-A debug assert catches it.
+**Two process-wide kill switches.** `FlGlobalEventBus.destroy()` and
+`FlLifecycleManager.cancel()` affect every live page. They exist for test teardown and app
+exit; page-level cleanup is automatic and needs neither.
 
-**Do not stack the standalone mixins.** `FlPageRouteMixin`, `FlAnimationLifecycleMixin` and
-`FlAppLifecycleMixin` subscribe to the same sources `FlPageLifecycleMixin` already uses. Pick one.
+**Do not use `onAppForeground` to ask whether the app is in the foreground.** It is an event,
+and the cold-start replay only reaches the first subscriber in the process. Read
+`isForeground` instead — it is a synchronous state read, valid at any time.
 
-**The event bus ignores visibility.** A stopped page still receives every event. Gate on
-`isPageAppeared` if a background page must not react.
-
-**`FlLifecycleManager.cancel()` is global too.** It removes the `WidgetsBinding` observer, so
-every live page stops receiving app events. Subscribe to `FlLifecycleManager.instance.stream`
-yourself and cancel your own `StreamSubscription` — never the manager.
-
-**`FlGlobalEventBus.destroy()` is global.** Call it only in a test `tearDown` or when the app is
-detaching — never in `State.dispose()` or a pop callback. It closes the whole broadcast stream, so
-every other live page's subscription receives `done` and dies silently. Page-level cleanup is what
-`FlStateEventBusMixin` already does for you.
+**When not to use this package.** It answers navigational questions. It does not detect a
+widget scrolling out of a `ListView`, or a widget covered by an opaque sibling in the same
+route — use `visibility_detector` for the first, and note that neither package handles the
+second.
 
 ## Example
 
-`example/` is a runnable app covering all seven entry points, each with a live on-screen event log:
+`example/` is a runnable app covering every entry point, each with a live on-screen event log:
 
 ```bash
 cd example
@@ -618,9 +618,9 @@ flutter run
 
 ## Using this package with an AI coding assistant
 
-This package is not on pub.dev, so an AI assistant has no training prior for it and will invent
-API names that do not exist. [`docs/ai/`](docs/ai/) is a ready-made convention file you can copy
-into your own project to prevent that — an `AGENTS.md` covering entry-point selection, the
+This package is new, so an AI assistant has no training prior for it and will invent API names
+that do not exist. [`docs/ai/`](docs/ai/) is a ready-made convention file you can copy into your
+own project to prevent that — an `AGENTS.md` covering entry-point selection, the
 `resume/pause` vs `start/stop` decision, event ordering and a pre-commit checklist, plus three
 reference files with exact signatures, worked recipes and a pitfall guide.
 [`docs/ai/README.md`](docs/ai/README.md) explains where to put it, including the equivalent

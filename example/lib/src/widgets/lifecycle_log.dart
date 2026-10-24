@@ -81,10 +81,23 @@ class LifecycleLogController extends ChangeNotifier {
   }
 }
 
+/// 四个可见性事件。
+///
+/// 只演示「按页码 / 按路由驱动的显示与隐藏」的页面（PageView、IndexedStack、
+/// 多 Navigator）把 [DemoLogMixin.loggedStates] 设成它：那些页面的重点是
+/// start / stop 的**配对与时序**，而 init / contextReady / postFrame / 两组转场
+/// 动画等十几个事件会把这条主线淹掉。想看全量事件请去 `FlPageLifecycleMixin` 那页。
+const visibilityStates = <FlLifecycleState>{
+  FlLifecycleState.onPageStart,
+  FlLifecycleState.onPageResume,
+  FlLifecycleState.onPagePause,
+  FlLifecycleState.onPageStop,
+};
+
 /// 把 `FlPageLifecycleMixin` 的全部事件接到 [log] 上。
 ///
 /// `onLifecycleStateChanged` 会收到 18 个枚举事件中的每一个，因此不必逐个覆写
-/// `onPageStart` / `onPageResume`……
+/// `onPageStart` / `onPageResume`……需要收窄时覆写 [loggedStates]。
 mixin DemoLogMixin<T extends StatefulWidget>
     on State<T>, FlPageLifecycleMixin<T> {
   LifecycleLogController get log;
@@ -92,9 +105,18 @@ mixin DemoLogMixin<T extends StatefulWidget>
   /// 嵌套场景（PageView 里再套 TabBarView）用它区分事件来源。
   String? get logTag => null;
 
+  /// 只记录这些事件；为 null（默认）表示 18 个事件全记。
+  ///
+  /// 典型取值是 [visibilityStates]。
+  Set<FlLifecycleState>? get loggedStates => null;
+
   @override
   void onLifecycleStateChanged(FlLifecycleState state) {
     super.onLifecycleStateChanged(state);
+    final allowed = loggedStates;
+    if (allowed != null && !allowed.contains(state)) {
+      return;
+    }
     log.log(state.name, tag: logTag);
   }
 }

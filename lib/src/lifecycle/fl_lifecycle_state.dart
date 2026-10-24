@@ -114,14 +114,17 @@ enum FlLifecycleState {
 
   /// 页面变为可见。
   ///
-  /// 内部由 `_hasAppeared` 标志位保证幂等：已处于可见状态时重复触发会被忽略。
-  /// 发出后会**立即接着发出** [onPageResume]。
+  /// 内部由 `_hasAppeared` 标志位保证幂等：已处于可见状态时重复触发不会再发出
+  /// 本事件；若此刻页面处于 pause，只补发一次 [onPageResume]（见该事件的
+  /// 触发来源）。发出后会**立即接着发出** [onPageResume]。
   ///
   /// 触发来源：
   /// - 首帧渲染完成（非 PageView 场景，页面首次显示）
   /// - 上层普通页面 pop（`FlRouteObserver.didPop`，被 pop 的不是 `PopupRoute`）
   /// - 上层页面被 `removeRoute` 移除（`didRemove`）
-  /// - PageView 场景：滑动到 `pageIndex` 对应的页
+  /// - PageView 场景：翻页**停**在 `pageIndex` 对应的页上。是停下来的那一刻
+  ///   而不是滑过半页的那一刻，被 `animateToPage` 掠过去的中间页因此不会触发，
+  ///   见 `FlPageIndexScope` 的「提交时机」一节
   ///
   /// **不触发**：上层被 push 的是 `PopupRoute`（弹窗）时，
   /// 下方页面从未 stop 过，因此关闭弹窗只会发 [onPageResume]。
@@ -136,6 +139,9 @@ enum FlLifecycleState {
   /// - 紧随 [onPageStart] 之后自动发出
   /// - 上层 `PopupRoute`（dialog / bottomSheet 等）被 pop，
   ///   且本页仍处于可见状态（`_hasAppeared == true`）
+  /// - 弹窗开着时被 `pushReplacement` / `pushAndRemoveUntil` 换成普通路由，
+  ///   该路由随后被 pop：本页从未 stop 过，此刻收到的路由事件是 start，
+  ///   按 resume 补发，[onPageStart] 不会重复发出
   onPageResume,
 
   /// 入场转场动画播放完毕 —— 路由动画进入 `AnimationStatus.completed`。
@@ -147,7 +153,8 @@ enum FlLifecycleState {
   /// 推迟到转场动画结束后执行，避免掉帧。
   ///
   /// 可能重复发出：iOS 侧滑返回手势中途放弃时，动画会
-  /// `reverse → forward → completed`，本事件会再次发出。
+  /// `reverse → forward → completed`，本事件会再次发出。因此放在这里的网络请求、
+  /// 埋点上报**必须自己做幂等或去重**——否则一个常见的 iOS 手势就会让它执行两遍。
   onPageEnterAnimationEnd,
 
   /// 页面失去交互焦点，但**可能仍然可见**。
@@ -173,7 +180,8 @@ enum FlLifecycleState {
   /// - 自身被 pop（`didPop`）
   /// - 自身被 `removeRoute` 移除（`didRemove`）
   /// - 自身被 `pushReplacement` 替换（`didReplace` 的 oldRoute）
-  /// - PageView 场景：从 `pageIndex` 对应的页滑走
+  /// - PageView 场景：翻页停在了别的页上（同上，是停下来的那一刻；半途放弃的
+  ///   拖动不会触发）
   /// - `State.dispose` 中，若页面仍处于可见状态则补发
   onPageStop,
 

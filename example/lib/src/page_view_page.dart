@@ -5,7 +5,7 @@ import 'widgets/demo_scaffold.dart';
 import 'widgets/lifecycle_log.dart';
 
 /// PageView 场景：三个子页各自混入 `FlPageLifecycleMixin`，
-/// 由 `FlPageViewScope` 下发页码与控制器来驱动可见性。
+/// 由 `FlPageIndexScope` 下发页码与控制器来驱动可见性。
 class PageViewPage extends StatefulWidget {
   const PageViewPage({super.key});
 
@@ -26,7 +26,7 @@ class _PageViewPageState extends State<PageViewPage> {
 
   /// 点击底部导航切页。
   ///
-  /// `jumpToPage` / `animateToPage` 均可：子页的生命周期由 [FlPageViewScope]
+  /// `jumpToPage` / `animateToPage` 均可：子页的生命周期由 [FlPageIndexScope]
   /// 下发的 `PageController` 驱动，两种切法都会通知到监听者。
   void _onTapItem(int index) {
     if (index == _index) return;
@@ -41,7 +41,7 @@ class _PageViewPageState extends State<PageViewPage> {
         physics: const NeverScrollableScrollPhysics(),
         onPageChanged: (index) => setState(() => _index = index),
         // 包一层 Scope，页码自动下发，子页无需再声明 pageIndex。
-        children: FlPageViewScope.wrapChildren(
+        children: FlPageIndexScope.wrapChildren(
           controller: _controller,
           children: const [PageOne(), PageTwo(), PageThree()],
         ),
@@ -72,10 +72,15 @@ class _PageOneState extends State<PageOne>
   @override
   final log = LifecycleLogController(name: 'PageOne');
 
+  /// 本页只看 start / resume / pause / stop 的配对与时序，
+  /// 其余十几个事件会把这条主线淹掉。
+  @override
+  Set<FlLifecycleState>? get loggedStates => visibilityStates;
+
   /// 两个开关默认都是 false，PageView 子页要按页码驱动可见性、
   /// 并顺带演示 App 前后台，所以显式打开。
   @override
-  bool get observePageView => true;
+  bool get observePageIndex => true;
 
   @override
   bool get wantKeepAlive => true;
@@ -106,8 +111,13 @@ class _PageTwoState extends State<PageTwo>
   @override
   final log = LifecycleLogController(name: 'PageTwo');
 
+  /// 本页只看 start / resume / pause / stop 的配对与时序，
+  /// 其余十几个事件会把这条主线淹掉。
   @override
-  bool get observePageView => true;
+  Set<FlLifecycleState>? get loggedStates => visibilityStates;
+
+  @override
+  bool get observePageIndex => true;
 
   @override
   bool get wantKeepAlive => true;
@@ -143,7 +153,7 @@ class _PageTwoState extends State<PageTwo>
   }
 }
 
-/// 第三页内部再嵌一个 `TabBarView`，演示 `FlPageViewScope` 对
+/// 第三页内部再嵌一个 `TabBarView`，演示 `FlPageIndexScope` 对
 /// `TabController` 的支持，以及嵌套时可见性按整条 Scope 链判定的行为。
 class PageThree extends StatefulWidget {
   const PageThree({super.key});
@@ -163,11 +173,16 @@ class _PageThreeState extends State<PageThree>
   @override
   final log = LifecycleLogController(name: 'PageThree');
 
+  /// 本页只看 start / resume / pause / stop 的配对与时序，
+  /// 其余十几个事件会把这条主线淹掉。
+  @override
+  Set<FlLifecycleState>? get loggedStates => visibilityStates;
+
   @override
   String get logTag => 'PageThree';
 
   @override
-  bool get observePageView => true;
+  bool get observePageIndex => true;
 
   late final _tabController = TabController(length: 2, vsync: this);
 
@@ -218,7 +233,7 @@ class _PageThreeState extends State<PageThree>
                 height: 96,
                 child: TabBarView(
                   controller: _tabController,
-                  children: FlPageViewScope.wrapChildren(
+                  children: FlPageIndexScope.wrapChildren(
                     controller: _tabController,
                     children: [
                       _TabChild(tag: 'Tab A', log: log),
@@ -242,7 +257,7 @@ class _PageThreeState extends State<PageThree>
   }
 }
 
-/// TabBarView 的一个子页，页码由内层 `FlPageViewScope` 下发的
+/// TabBarView 的一个子页，页码由内层 `FlPageIndexScope` 下发的
 /// `TabController` 决定。
 class _TabChild extends StatefulWidget {
   const _TabChild({required this.tag, required this.log});
@@ -262,9 +277,14 @@ class _TabChildState extends State<_TabChild>
   @override
   String get logTag => widget.tag;
 
+  /// 本页只看 start / resume / pause / stop 的配对与时序，
+  /// 其余十几个事件会把这条主线淹掉。
+  @override
+  Set<FlLifecycleState>? get loggedStates => visibilityStates;
+
   /// 内层 TabBarView 的子页同样要走页码判定。
   @override
-  bool get observePageView => true;
+  bool get observePageIndex => true;
 
   @override
   Widget build(BuildContext context) {
@@ -277,7 +297,7 @@ class _TabChildState extends State<_TabChild>
         borderRadius: BorderRadius.circular(12),
       ),
       child: Text(
-        '${widget.tag}（pageIndex = $pageIndex, depth = $pageViewDepth）',
+        '${widget.tag}（pageIndex = $pageIndex, depth = $pageScopeDepth）',
         style: theme.textTheme.labelLarge?.copyWith(fontFamily: 'monospace'),
       ),
     );

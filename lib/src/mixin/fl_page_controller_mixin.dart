@@ -191,7 +191,11 @@ mixin FlPageControllerMixin {
   void onPageEnterAnimationStart() {}
 
   /// 入场转场动画播放完毕。适合把重量级操作推迟到转场结束避免掉帧。
-  /// iOS 侧滑返回中途放弃时会重复发出。
+  ///
+  /// **但本回调可能重复发出**：iOS 侧滑返回拖到一半放弃时，动画走
+  /// `reverse → forward → completed`，`completed` 第二次到达，本回调再触发一次。
+  /// 因此放在这里的网络请求、埋点上报**必须自己做幂等或去重**——否则一个常见的
+  /// iOS 手势就会让它执行两遍。
   @protected
   void onPageEnterAnimationEnd() {}
 
@@ -247,6 +251,6 @@ mixin FlPageControllerMixin {
   /// 所在 `PageView` 的页码变化，参数为 (旧页码, 新页码)。
   ///
   /// **不经 [onLifecycleChanged] 分发**——页码变化不属于 [FlLifecycleState]，
-  /// 需由页面侧在 `onPageViewChanged` 中直接调用本方法转发。
-  void onPageViewChanged(int from, int to) {}
+  /// 需由页面侧在 `onPageIndexChanged` 中直接调用本方法转发。
+  void onPageIndexChanged(int from, int to) {}
 }

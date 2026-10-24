@@ -16,7 +16,9 @@ import '../lifecycle/lifecycle_route_aware.dart';
 /// PageView 页码判断，也不关心页面是否真的可见——弹窗覆盖同样按 pause 转发。
 ///
 /// 它并非完全不做幂等：[onRouteStart] / [onRouteStop] 由 `_hasAppear` 保证
-/// 一次性，未曾出现过就收到 resume 时会补发 start，`routePageStop` 会先补
+/// 一次性，未曾出现过就收到 resume 时会补发 start，已出现过又收到 start 时
+/// 只补发 [onRouteResume]（弹窗被 `pushReplacement` / `pushAndRemoveUntil`
+/// 换掉、随后上层被 pop 的情形；与 resume 路径一样不判重），`routePageStop` 会先补
 /// [onRoutePause] 再发 [onRouteStop]，`dispose` 也会补发 pause / stop 对。
 /// 真正**没有**守卫的是 [onRoutePause]——它无条件转发，页面从未出现过或
 /// 已经处于 pause 时照样会发。
@@ -166,7 +168,12 @@ mixin FlPageRouteMixin<T extends StatefulWidget> on State<T>
   @protected
   void onPageEnterAnimationStart() {}
 
-  /// 入场转场动画播放完毕。iOS 侧滑返回中途放弃时会重复发出。
+  /// 入场转场动画播放完毕。适合把重量级操作推迟到转场结束后执行，避免掉帧。
+  ///
+  /// **但本回调可能重复发出**：iOS 侧滑返回拖到一半放弃时，动画走
+  /// `reverse → forward → completed`，`completed` 第二次到达，本回调再触发一次。
+  /// 因此放在这里的网络请求、埋点上报**必须自己做幂等或去重**——否则一个常见的
+  /// iOS 手势就会让它执行两遍。
   @protected
   void onPageEnterAnimationEnd() {}
 
@@ -208,8 +215,12 @@ mixin FlPageRouteMixin<T extends StatefulWidget> on State<T>
 
   @internal
   @override
+  @nonVirtual
   void routePageStart() {
     if (_hasAppear) {
+      // 已露面却又收到 start：弹窗被 replace / remove 掉后下方页面没拿到 resume，
+      // 这里只补 resume，start 仍保持一次性。
+      FlLifecycleGuard.run(onRouteResume); // 弹窗被 replace 后的 resume 补发
       return;
     }
     _hasAppear = true;
@@ -219,6 +230,7 @@ mixin FlPageRouteMixin<T extends StatefulWidget> on State<T>
 
   @internal
   @override
+  @nonVirtual
   void routePageResume() {
     // 尚未露面时补发 start + resume：页面可能在首帧就被同一帧 push 的弹窗盖住，
     // 被 `initState` 的栈顶判断挡掉了 start，此刻弹窗关闭正是它第一次真正露面。
@@ -231,12 +243,14 @@ mixin FlPageRouteMixin<T extends StatefulWidget> on State<T>
 
   @internal
   @override
+  @nonVirtual
   void routePagePause() {
     FlLifecycleGuard.run(onRoutePause);
   }
 
   @internal
   @override
+  @nonVirtual
   void routePageStop() {
     if (!_hasAppear) {
       return;

@@ -5,14 +5,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:fl_page_lifecycle/fl_page_lifecycle.dart';
 
 void main() {
-  group('FlPageViewScope.indexOf', () {
+  group('FlPageIndexScope.indexOf', () {
     testWidgets('returns null for a zero-length TabController', (tester) async {
       final controller = TabController(length: 0, vsync: const TestVSync());
       addTearDown(controller.dispose);
 
       // length - 1 is -1, and num.clamp throws an ArgumentError when
       // upperLimit < lowerLimit. Callers treat null as "not available yet".
-      expect(FlPageViewScope.indexOf(controller), isNull);
+      expect(FlPageIndexScope.indexOf(controller), isNull);
     });
 
     testWidgets('returns the current index for a normal TabController', (
@@ -25,11 +25,11 @@ void main() {
       );
       addTearDown(controller.dispose);
 
-      expect(FlPageViewScope.indexOf(controller), 1);
+      expect(FlPageIndexScope.indexOf(controller), 1);
     });
   });
 
-  group('FlPageViewScope', () {
+  group('FlPageIndexScope', () {
     testWidgets('builds with a zero-length TabController without throwing', (
       tester,
     ) async {
@@ -40,7 +40,7 @@ void main() {
       // constructor is public and tabs loaded on demand start out empty.
       await tester.pumpWidget(
         MaterialApp(
-          home: FlPageViewScope(
+          home: FlPageIndexScope(
             pageIndex: 0,
             controller: controller,
             child: const SizedBox.shrink(),
@@ -61,7 +61,7 @@ void main() {
         MaterialApp(
           home: TabBarView(
             controller: controller,
-            children: FlPageViewScope.wrapChildren(
+            children: FlPageIndexScope.wrapChildren(
               controller: controller,
               children: const <Widget>[
                 SizedBox.shrink(),
@@ -74,12 +74,12 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(FlPageViewScope.indexOf(controller), 0);
+      expect(FlPageIndexScope.indexOf(controller), 0);
 
       controller.animateTo(2);
       await tester.pumpAndSettle();
 
-      expect(FlPageViewScope.indexOf(controller), 2);
+      expect(FlPageIndexScope.indexOf(controller), 2);
       expect(tester.takeException(), isNull);
     });
   });

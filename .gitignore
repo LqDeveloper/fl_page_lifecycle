@@ -29,4 +29,5 @@ migrate_working_dir/
 .flutter-plugins-dependencies
 /build/
 /coverage/
-/package分析报告.md
+/package分析报告*.md
+/lark文档.md

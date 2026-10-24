@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'package:meta/meta.dart';
 
+import '../lifecycle/fl_lifecycle_guard.dart';
 import '../lifecycle/fl_lifecycle_manager.dart';
 
 /// `FlPageLifecycleMixin` 的 App 生命周期委托——把「页面与 App 前后台状态之间
@@ -68,16 +69,24 @@ class FlAppLifecycleDelegate {
     _lifecycleSub = null;
   }
 
+  /// 下面两个回调都包 [FlLifecycleGuard]，理由与别处不同，记一下。
+  ///
+  /// 这里的调用方是 `StreamSubscription`，不是页面的调用链：宿主抛异常时**别的
+  /// 订阅者本来就不受影响**（广播流逐个分发，一个监听器抛不影响下一个），
+  /// 所以包它不是为了缩小爆炸半径，而是为了**统一上报通道**。
+  ///
+  /// 不包的话异常作为「未捕获的异步错误」交给 zone，与本库其余回调走的
+  /// [FlutterError.onError] 是两条路：少了 `library: 'fl_page_lifecycle'` 与
+  /// 「分发页面生命周期回调时」这层 context，崩溃收集端看不出是生命周期回调里
+  /// 炸的；使用方给自己页面写 widget 测试时也没法用 `tester.takeException()`
+  /// 消费掉它，测试直接失败且失败信息不指向回调。
+  ///
   ///true -> 前台，false -> 后台
   void _handlerForegroundChanged(bool isForeground) {
-    if (isForeground) {
-      _onForeground();
-    } else {
-      _onBackground();
-    }
+    FlLifecycleGuard.run(isForeground ? _onForeground : _onBackground);
   }
 
   void _handlerAppLifecycleState(AppLifecycleState state) {
-    _onStateChanged(state);
+    FlLifecycleGuard.run(() => _onStateChanged(state));
   }
 }

@@ -13,7 +13,6 @@ class DemoScaffold extends StatelessWidget {
     this.logTitle,
     this.appBar = true,
     this.bottomNavigationBar,
-    this.footer,
   });
 
   final String title;
@@ -32,9 +31,6 @@ class DemoScaffold extends StatelessWidget {
   final bool appBar;
 
   final Widget? bottomNavigationBar;
-
-  /// 操作区与日志面板之间的补充内容，只有个别示例页会用到。
-  final Widget? footer;
 
   @override
   Widget build(BuildContext context) {
@@ -98,7 +94,6 @@ class DemoScaffold extends StatelessWidget {
                 ),
                 const SizedBox(height: 14),
               ],
-              if (footer != null) ...[footer!, const SizedBox(height: 14)],
               Expanded(
                 child: LifecycleLogPanel(controller: log, title: logTitle),
               ),

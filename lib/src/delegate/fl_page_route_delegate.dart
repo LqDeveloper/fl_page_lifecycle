@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:meta/meta.dart';
 
 import '../lifecycle/fl_route_observer.dart';
+import '../lifecycle/fl_route_observer_proxy.dart';
 import '../lifecycle/lifecycle_route_aware.dart';
 import 'fl_route_animation_binding.dart';
 
@@ -60,7 +61,7 @@ class FlPageRouteDelegate implements LifecycleRouteAware {
   ///
   /// 没有 `ModalRoute`（不在任何路由中）或已 [detach] 时为 false。因此**不要**
   /// 拿它去过滤生命周期事件——那会把非路由页面永久挡死。这一点与
-  /// `FlPageViewDelegate.isCurrentPage` 的约定相反，后者在「不在 PageView 中」
+  /// `FlPageIndexDelegate.isCurrentPage` 的约定相反，后者在「不在 PageView 中」
   /// 时恒为 true，就是为了让宿主能无分支地做门禁。
   bool get isCurrent => _modalRoute?.isCurrent ?? false;
 
@@ -116,21 +117,38 @@ class FlPageRouteDelegate implements LifecycleRouteAware {
   }
 
   /// 整个进程只提示一次，避免每个页面刷一行。
+  ///
+  /// 代价是它会**跨测试用例残留**，断言「应当提示」的用例会因为前面的用例先触发过
+  /// 而静默通过。测试请在 `setUp` 里调 [debugResetWarnings] 隔离。
   static bool _debugDidWarnObserverMissing = false;
 
-  /// 检查 [route] 所属的 `Navigator` 有没有装上 [FlRouteObserver]。
+  /// 复位「已提示过」标志，让下一次检查重新提示。**仅供测试隔离使用。**
+  ///
+  /// 生产代码不需要调用：这个标志只在 debug 下、且只在 `assert` 内被访问。
+  @internal
+  static void debugResetWarnings() => _debugDidWarnObserverMissing = false;
+
+  /// 检查 [route] 所属的 `Navigator` 有没有装上 [FlRouteObserver] 或
+  /// [FlRouteObserverProxy]。
   ///
   /// 没装的话本库的路由事件（start / resume / pause / stop）全部收不到，
   /// 且不会报任何错——这是新用户最容易踩、又最难自查的一个坑，
   /// 所以在 debug 下主动喊一声。用 `debugPrint` 而不是 `assert(false)`：
   /// 只用 App 前后台事件、不关心路由的用法是合法的，不该直接崩掉。
+  ///
+  /// 两种类型都算数：嵌套 `Navigator` 挂的是 [FlRouteObserverProxy]，它把事件
+  /// 转发给同一个 [FlRouteObserver.instance]，是完全正常的接入方式。只认
+  /// `FlRouteObserver.instance` 会把每一个嵌套 `Navigator` 都误报成未注册。
   void _debugCheckObserverRegistered(ModalRoute route) {
     if (_debugDidWarnObserverMissing) {
       return;
     }
     final observers = route.navigator?.widget.observers;
     // 拿不到 navigator（尚未 install）时不下结论，留到下次。
-    if (observers == null || observers.contains(FlRouteObserver.instance)) {
+    if (observers == null ||
+        observers.any(
+          (o) => o is FlRouteObserver || o is FlRouteObserverProxy,
+        )) {
       return;
     }
     _debugDidWarnObserverMissing = true;
@@ -138,8 +156,10 @@ class FlPageRouteDelegate implements LifecycleRouteAware {
       '[page_lifecycle] 当前 Navigator 没有注册 FlRouteObserver，'
       '页面的 onPageStart / onPageResume / onPagePause / onPageStop 不会触发'
       '（转场动画回调不受影响，它直接监听 ModalRoute.animation）。请加上：\n'
-      '  MaterialApp(navigatorObservers: [FlRouteObserver.instance], ...)\n'
-      '嵌套 Navigator 需要各自注册一次。（本提示每次运行只输出一遍）',
+      '  MaterialApp(navigatorObservers: [FlRouteObserver()], ...)\n'
+      '嵌套 Navigator 各自也要加一个，但不能复用同一个实例——'
+      '根用 FlRouteObserver()，嵌套的每个用一个新的 FlRouteObserverProxy()。'
+      '（本提示每次运行只输出一遍）',
     );
   }
 
