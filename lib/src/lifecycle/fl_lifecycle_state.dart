@@ -23,7 +23,8 @@
 /// onPagePause → onPageStop  ...  onPageStart → onPageResume
 /// ```
 ///
-/// 被弹窗（`PopupRoute`）覆盖后再关闭：
+/// 被弹窗覆盖后再关闭（「弹窗」指 `PopupRoute`，以及 `opaque: false` 的
+/// 非不透明路由——两者盖上来时下层页面都仍在屏幕上，下文同）：
 /// ```
 /// onPagePause  ...  onPageResume
 /// ```
@@ -114,14 +115,17 @@ enum FlLifecycleState {
 
   /// 页面变为可见。
   ///
-  /// 内部由 `_hasAppeared` 标志位保证幂等：已处于可见状态时重复触发会被忽略。
-  /// 发出后会**立即接着发出** [onPageResume]。
+  /// 内部由 `isAppeared` 标志位保证幂等：已处于可见状态时重复触发不会再发出
+  /// 本事件；若此刻页面处于 pause，只补发一次 [onPageResume]（见该事件的
+  /// 触发来源）。发出后会**立即接着发出** [onPageResume]。
   ///
   /// 触发来源：
   /// - 首帧渲染完成（非 PageView 场景，页面首次显示）
   /// - 上层普通页面 pop（`FlRouteObserver.didPop`，被 pop 的不是 `PopupRoute`）
   /// - 上层页面被 `removeRoute` 移除（`didRemove`）
-  /// - PageView 场景：滑动到 `pageIndex` 对应的页
+  /// - PageView 场景：翻页**停**在 `pageIndex` 对应的页上。是停下来的那一刻
+  ///   而不是滑过半页的那一刻，被 `animateToPage` 掠过去的中间页因此不会触发，
+  ///   见 `FlPageIndexScope` 的「提交时机」一节
   ///
   /// **不触发**：上层被 push 的是 `PopupRoute`（弹窗）时，
   /// 下方页面从未 stop 过，因此关闭弹窗只会发 [onPageResume]。
@@ -129,13 +133,16 @@ enum FlLifecycleState {
 
   /// 页面变为可交互（获得焦点）。
   ///
-  /// 内部由 `_hasResume` 标志位保证幂等。
+  /// 内部由 `isResumed` 标志位保证幂等。
   /// 适合：恢复动画、恢复计时器、刷新数据、埋点页面曝光。
   ///
   /// 触发来源：
   /// - 紧随 [onPageStart] 之后自动发出
   /// - 上层 `PopupRoute`（dialog / bottomSheet 等）被 pop，
-  ///   且本页仍处于可见状态（`_hasAppeared == true`）
+  ///   且本页仍处于可见状态（`isAppeared == true`）
+  /// - 弹窗开着时被 `pushReplacement` / `pushAndRemoveUntil` 换成普通路由，
+  ///   该路由随后被 pop：本页从未 stop 过，此刻收到的路由事件是 start，
+  ///   按 resume 补发，[onPageStart] 不会重复发出
   onPageResume,
 
   /// 入场转场动画播放完毕 —— 路由动画进入 `AnimationStatus.completed`。
@@ -147,12 +154,13 @@ enum FlLifecycleState {
   /// 推迟到转场动画结束后执行，避免掉帧。
   ///
   /// 可能重复发出：iOS 侧滑返回手势中途放弃时，动画会
-  /// `reverse → forward → completed`，本事件会再次发出。
+  /// `reverse → forward → completed`，本事件会再次发出。因此放在这里的网络请求、
+  /// 埋点上报**必须自己做幂等或去重**——否则一个常见的 iOS 手势就会让它执行两遍。
   onPageEnterAnimationEnd,
 
   /// 页面失去交互焦点，但**可能仍然可见**。
   ///
-  /// 内部由 `_hasResume` 标志位保证幂等：未处于 resume 状态时不发出。
+  /// 内部由 `isResumed` 标志位保证幂等：未处于 resume 状态时不发出。
   /// 适合：暂停动画 / 视频、停止计时器、结束页面停留时长统计。
   ///
   /// 触发来源：
@@ -164,7 +172,7 @@ enum FlLifecycleState {
 
   /// 页面完全不可见。
   ///
-  /// 内部由 `_hasAppeared` 标志位保证幂等。
+  /// 内部由 `isAppeared` 标志位保证幂等。
   /// **发出前会先自动补发 [onPagePause]**（若当前仍处于 resume 状态），
   /// 因此订阅者总能拿到成对的 pause / stop。
   ///
@@ -173,7 +181,8 @@ enum FlLifecycleState {
   /// - 自身被 pop（`didPop`）
   /// - 自身被 `removeRoute` 移除（`didRemove`）
   /// - 自身被 `pushReplacement` 替换（`didReplace` 的 oldRoute）
-  /// - PageView 场景：从 `pageIndex` 对应的页滑走
+  /// - PageView 场景：翻页停在了别的页上（同上，是停下来的那一刻；半途放弃的
+  ///   拖动不会触发）
   /// - `State.dispose` 中，若页面仍处于可见状态则补发
   onPageStop,
 
@@ -262,10 +271,9 @@ enum FlLifecycleState {
   /// `paused`（真正进入后台）再回来才发出，
   /// `inactive → resumed` 这类短暂中断会被过滤掉。
   ///
-  /// 另有一次**冷启动补发**：`FlLifecycleManager` 首次被订阅时，
-  /// 若 App 已处于 resumed 状态，会通过 microtask 补发一次 `true`，
-  /// 保证订阅者不漏掉初始前台事件。由于补发标志位是全局的，
-  /// 这次补发只有**首个触发订阅的页面**能收到。
+  /// 订阅时 App 已在前台的，**不会**补发初始事件——这是事件不是状态，
+  /// 判断当前在不在前台请读 `isForeground`。唯一的例外是订阅早于 App 的
+  /// 首次 resumed（冷启动极早期），那一次 resumed 会发出。
   ///
   /// 适合：回到前台刷新列表、重新校验登录态、恢复轮询。
   onAppForeground,

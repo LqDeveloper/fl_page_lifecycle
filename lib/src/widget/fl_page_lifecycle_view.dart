@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../lifecycle/fl_lifecycle_state.dart';
 import '../mixin/fl_page_lifecycle_mixin.dart';
-import 'fl_page_view_scope.dart';
+import 'fl_page_index_scope.dart';
 
 /// 生命周期事件回调。[context] 是内部 `State` 的 context。
 ///
@@ -17,7 +17,7 @@ typedef FlPageRouteParamCallback =
     void Function(BuildContext context, String? routeName, Object? arguments);
 
 /// PageView 页码变化回调，参数为 (旧页码, 新页码)。
-typedef FlPageViewChangedCallback =
+typedef FlPageIndexChangedCallback =
     void Function(BuildContext context, int from, int to);
 
 /// 以「包一层 Widget」的方式获取页面生命周期，无需在 `State` 上混入
@@ -38,7 +38,7 @@ typedef FlPageViewChangedCallback =
 ///
 /// 触发时机与幂等保证均与 [FlPageLifecycleMixin] 一致，详见
 /// [FlLifecycleState] 的文档。本 Widget 只暴露事件流，mixin 的 `routeName` /
-/// `arguments` / `isInPageView` 等 getter 不对外可见。
+/// `arguments` / `isInPageScope` 等 getter 不对外可见。
 ///
 /// ## 实例成本
 ///
@@ -51,16 +51,16 @@ typedef FlPageViewChangedCallback =
 /// 两个 observe 开关默认都是 `false`，正是为了让大量实例（例如给每个卡片
 /// 单独埋曝光）的场景开箱即省掉占大头的两条流订阅。
 class FlPageLifecycleView extends StatefulWidget {
-  /// 是否启用 PageView 可见性判定，见 [FlPageLifecycleMixin.observePageView]。
+  /// 是否启用 PageView 可见性判定，见 [FlPageLifecycleMixin.observePageIndex]。
   /// 默认 `false`，与 mixin 一致。
   ///
-  /// 为 `true` 时在 `didChangeDependencies` 中查找 [FlPageViewScope]，命中即由
+  /// 为 `true` 时在 `didChangeDependencies` 中查找 [FlPageIndexScope]，命中即由
   /// 页码变化（而非路由变化）驱动 start / stop。为 `false`、或位于 `PageView`
-  /// 中却没包 [FlPageViewScope] 时，首帧直接发出 `onPageStart` → `onPageResume`。
+  /// 中却没包 [FlPageIndexScope] 时，首帧直接发出 `onPageStart` → `onPageResume`。
   ///
   /// **同一个 `FlPageLifecycleView` 上必须始终传同一个值**（debug 下有断言把关）：
   /// 可见性状态机是有状态的，中途翻转会留下对不齐的中间态。
-  final bool observePageView;
+  final bool observePageIndex;
 
   /// 是否订阅 App 前后台事件，见 [FlPageLifecycleMixin.observeAppLifecycle]。
   ///
@@ -77,15 +77,17 @@ class FlPageLifecycleView extends StatefulWidget {
   /// 执行完之后抛出。`onPageDispose` 是最后一次回调。
   ///
   /// 不含路由参数与页码变化，它们不属于 [FlLifecycleState] 枚举，
-  /// 分别走 [onRouteParam] 与 [onPageViewChanged]。
+  /// 分别走 [onRouteParam] 与 [onPageIndexChanged]。
   final FlPageLifecycleCallback? onStateChanged;
 
   /// 路由参数就绪。未注册 `FlRouteObserver` 或页面没有 `ModalRoute` 时不触发。
   final FlPageRouteParamCallback? onRouteParam;
 
-  /// PageView 页码变化。仅在命中 [FlPageViewScope] 时触发，
-  /// 且首次确定页码时不发出。
-  final FlPageViewChangedCallback? onPageViewChanged;
+  /// PageView 页码变化，见 [FlPageLifecycleMixin.onPageIndexChanged] 的三条约定。
+  ///
+  /// 仅在命中 [FlPageIndexScope] 时触发。注意本 Widget 很容易踩到其中的「不补发」：
+  /// 把它条件渲染进一个已经翻好页的容器里时，它出生之前的那次换页不会补发。
+  final FlPageIndexChangedCallback? onPageIndexChanged;
 
   /// 被观察的子树，由 `build` 原样返回。
   final Widget child;
@@ -95,11 +97,11 @@ class FlPageLifecycleView extends StatefulWidget {
   /// 三个回调都是可选的，全不传时本 Widget 只是一层透明包装。
   const FlPageLifecycleView({
     super.key,
-    this.observePageView = false,
+    this.observePageIndex = false,
     this.observeAppLifecycle = false,
     this.onStateChanged,
     this.onRouteParam,
-    this.onPageViewChanged,
+    this.onPageIndexChanged,
     required this.child,
   });
 
@@ -110,7 +112,7 @@ class FlPageLifecycleView extends StatefulWidget {
 class _FlPageLifecycleViewState extends State<FlPageLifecycleView>
     with FlPageLifecycleMixin {
   @override
-  bool get observePageView => widget.observePageView;
+  bool get observePageIndex => widget.observePageIndex;
 
   @override
   bool get observeAppLifecycle => widget.observeAppLifecycle;
@@ -132,7 +134,7 @@ class _FlPageLifecycleViewState extends State<FlPageLifecycleView>
   }
 
   @override
-  void onPageViewChanged(int from, int to) {
-    widget.onPageViewChanged?.call(context, from, to);
+  void onPageIndexChanged(int from, int to) {
+    widget.onPageIndexChanged?.call(context, from, to);
   }
 }

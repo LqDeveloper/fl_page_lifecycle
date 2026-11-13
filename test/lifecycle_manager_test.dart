@@ -32,8 +32,7 @@ void main() {
     final subL = manager.lifecycle.listen(states.add);
     addTearDown(subF.cancel);
     addTearDown(subL.cancel);
-    // Drain the cold-start foreground replay, whose timing depends on the
-    // binding's current lifecycleState.
+    // Drain anything pending before the assertions below.
     await tester.idle();
 
     manager.cancel();
@@ -58,9 +57,8 @@ void main() {
     final foreground = <bool>[];
     final sub = manager.stream.listen(foreground.add);
     addTearDown(sub.cancel);
-    // Make the resumed state explicit: the cold-start replay is conditional on
-    // it, so without this the test would silently stop discriminating
-    // depending on which case ran before it.
+    // Make the resumed state explicit, so the test does not depend on which
+    // case ran before it.
     await dispatch(tester, AppLifecycleState.resumed);
     foreground.clear();
 
@@ -70,8 +68,8 @@ void main() {
 
     // The app never left the foreground, and this subscriber was listening the
     // whole time — it must not be told the app came back. cancel() used to
-    // reset _hasEverSentForeground, which made the next listen() replay the
-    // cold-start foreground event to everyone still attached.
+    // reset _hasEverSentForeground, which made the next listen() replay a
+    // foreground event to everyone still attached.
     expect(foreground, isEmpty);
   });
 
@@ -130,5 +128,30 @@ void main() {
 
     // Phone call, notification shade, app switcher: the app never left.
     expect(foreground, isEmpty);
+  });
+
+  testWidgets('subscribing while already resumed emits no foreground event', (
+    tester,
+  ) async {
+    // The app has been in the foreground for a while and nobody has subscribed
+    // yet (tearDown cancelled the manager).
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.idle();
+
+    final manager = FlLifecycleManager.instance;
+    final foreground = <bool>[];
+    final sub = manager.stream.listen(foreground.add);
+    addTearDown(sub.cancel);
+    await tester.idle();
+
+    // listen() used to replay foreground=true to the first subscriber of the
+    // process, however late it arrived — a page opened minutes after launch
+    // was told the app had just come back.
+    expect(foreground, isEmpty);
+
+    // A real round trip is still reported.
+    await dispatch(tester, AppLifecycleState.paused);
+    await dispatch(tester, AppLifecycleState.resumed);
+    expect(foreground, <bool>[false, true]);
   });
 }

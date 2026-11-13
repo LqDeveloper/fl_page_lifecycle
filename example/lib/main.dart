@@ -3,11 +3,12 @@ import 'package:example/src/app_lifecycle_page.dart';
 import 'package:example/src/controller_page.dart';
 import 'package:example/src/event_bus_page.dart';
 import 'package:example/src/home_page.dart';
+import 'package:example/src/indexed_stack_page.dart';
 import 'package:example/src/lifecycle_view_page.dart';
+import 'package:example/src/nested_navigator_page.dart';
 import 'package:example/src/page_lifecycle_page.dart';
 import 'package:example/src/page_view_page.dart';
 import 'package:example/src/route_page.dart';
-import 'package:example/src/route_stack_page.dart';
 import 'package:flutter/material.dart';
 import 'package:fl_page_lifecycle/fl_page_lifecycle.dart';
 
@@ -35,7 +36,8 @@ class MyApp extends StatelessWidget {
         "/FlPageLifecycleView": (_) => LifecycleViewPage(),
         "/FlPageControllerMixin": (_) => ControllerPage(),
         "/PageViewPage": (_) => PageViewPage(),
-        '/RouteStackPage': (_) => RouteStackPage(),
+        "/IndexedStackPage": (_) => IndexedStackPage(),
+        '/NestedNavigatorPage': (_) => NestedNavigatorPage(),
         "/FlStateEventBusMixin": (_) => EventBusPage(),
       },
     );

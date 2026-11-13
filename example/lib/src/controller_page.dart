@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:fl_page_lifecycle/fl_page_lifecycle.dart';
 
@@ -91,8 +89,6 @@ class DemoController with FlPageControllerMixin {
 
   final LifecycleLogController log;
 
-  Timer? _poll;
-
   /// 统一出口：先调 super 缓存状态，再记一条日志。
   @override
   void onLifecycleChanged(FlLifecycleState state, {BuildContext? context}) {
@@ -110,28 +106,6 @@ class DemoController with FlPageControllerMixin {
       detail: 'name=$routeName args=$arguments',
       tag: 'controller',
     );
-  }
-
-  @override
-  void onPageResume() {
-    _poll = Timer.periodic(const Duration(seconds: 3), (_) {
-      log.log('轮询一次', tag: 'controller');
-    });
-    log.log('轮询已启动', tag: 'controller');
-  }
-
-  @override
-  void onPagePause() {
-    _poll?.cancel();
-    _poll = null;
-    log.log('轮询已停止', tag: 'controller');
-  }
-
-  /// Controller 没有 dispose，收尾放这里。
-  @override
-  void onPageDispose() {
-    _poll?.cancel();
-    _poll = null;
   }
 
   /// 演示随时可读的那几个 getter。

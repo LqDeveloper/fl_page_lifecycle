@@ -12,7 +12,7 @@
       "id": 1,
       "name": "tabbar-lazy-load-and-tracking",
       "prompt": "首页是个 TabBarView，三个 tab：推荐、关注、我的。现在三个 tab 的接口在进首页的瞬间全都请求了，想改成划到哪个 tab 才请求那个 tab 的数据，之后再划回来不要重复请求。另外产品要每个 tab 的曝光次数和停留时长埋点。项目里用的是 fl_page_lifecycle。给我 HomePage 和其中一个 tab（RecommendTab）的完整代码。",
-      "expected_output": "HomePage 用 FlPageViewScope.wrapChildren 包裹 TabBarView 的 children 并传 TabController；RecommendTab 混入 FlPageLifecycleMixin 且 observePageView => true（两步都做到），onPageStart 里用 _loaded 标志只首次加载，埋点用 onPageStart/onPageStop 配对算停留时长（而不是 resume/pause），TabController 正确 dispose。",
+      "expected_output": "HomePage 用 FlPageIndexScope.wrapChildren 包裹 TabBarView 的 children 并传 TabController；RecommendTab 混入 FlPageLifecycleMixin 且 observePageIndex => true（两步都做到），onPageStart 里用 _loaded 标志只首次加载，埋点用 onPageStart/onPageStop 配对算停留时长（而不是 resume/pause），TabController 正确 dispose。",
       "files": []
     },
     {

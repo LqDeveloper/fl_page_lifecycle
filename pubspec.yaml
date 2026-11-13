@@ -3,7 +3,7 @@ description: >-
   Android-style page lifecycle for Flutter: start/resume/pause/stop on any State,
   plus first frame, route transition animations, app foreground/background and
   PageView paging.
-version: 0.0.1
+version: 0.0.4
 homepage: https://github.com/LqDeveloper/fl_page_lifecycle
 repository: https://github.com/LqDeveloper/fl_page_lifecycle
 issue_tracker: https://github.com/LqDeveloper/fl_page_lifecycle/issues

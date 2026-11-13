@@ -1,205 +1,205 @@
-# fl_page_lifecycle 接入约定
+# fl_page_lifecycle 0.0.4 接入约定
 
-给在本项目里写代码的 AI 编码助手看的说明。适用于任何涉及 **Flutter 页面可见性 / 页面生命周期**的改动：页面被覆盖或离开时暂停视频与轮询、页面曝光与停留时长埋点、`TabBarView` / `PageView` 子页切换时启停任务、App 前后台回来刷新数据、页面间事件总线。
+给在本项目里写代码的 AI 编码助手看。涉及 **页面可见性 / 页面生命周期 / App 前后台** 的改动都按这份来，不要手写 `RouteAware` + `isCurrent` 或 `didChangeAppLifecycleState`。
 
-本项目用 [`fl_page_lifecycle`](https://github.com/LqDeveloper/fl_page_lifecycle) 处理这类需求，**不要手写 `RouteAware` + `ModalRoute.isCurrent` 的方案**——原因见下一节。
+新包，不在训练数据里。`PageLifecycleMixin`、`onPageShow`/`onPageHide`、`pauseOnOverlay:` 都是编造的，真名一律 `Fl` 开头，签名以第 7 节为准。
 
-## 什么时候去读参考文件
+## 0. 先查依赖
 
-这份文件够应付大部分改动。遇到下面三种情况再去读对应的参考文件，**不要凭印象拼 API 名字**：
+`grep -n -A1 fl_page_lifecycle pubspec.yaml`
 
-| 情况 | 读 |
-|---|---|
-| 需要某个类 / 回调 / getter 的**精确签名**，或不确定某个名字是否存在 | `references/api.md` |
-| 要写具体场景的代码（视频、埋点、轮询、TabBar 懒加载、事件总线、Controller 转发） | `references/recipes.md` |
-| 行为和预期不符，要查原因；或想确认某个语义的边界 | `references/pitfalls.md` |
+- **是 0.0.4** → 继续。
+- **不是 0.0.4，或没装** → 停下问用户，别自己装依赖，也别按本文写代码。给出 `flutter pub add fl_page_lifecycle`（约束 `^0.0.4`）。
+- **用户不装** → 用原生方案并说明局限，见 `pitfalls.md` 末尾。
 
-这个库**不在公开 pub.dev 上**，所以你对它没有任何训练先验。`PageLifecycleMixin`、`onPageShow`、`onPageHide`、`pauseOnOverlay:` 这类名字都是不存在的——真实的名字全部以 `Fl` 开头，回调是 `onPageStart` / `onPageResume` / `onPagePause` / `onPageStop`。拿不准就查 `references/api.md`。
+本库答的是「用户此刻在不在这个页面上」。回调**成对且幂等**：start↔stop、pause↔resume/stop，缺的那半在 `dispose` 补发。
 
-## 为什么用这个库而不是手写
-
-手写 `RouteAware` + `isCurrent` 在这几个场景上必然出错：
-
-- **dialog 盖住页面时，页面仍然可见**，只该 `pause` 不该 `stop`。而 `ModalRoute.isCurrent` 此时返回 `false`，分不出这两种情况。所以**永远别用 `isCurrent` 判断可见性**。
-- `pushAndRemoveUntil` 会给一个「仍被别的路由盖着」的路由发 `didPop`，朴素的 `RouteAware` 会给没人看得见的页面发 `start`。
-- iOS 侧滑返回中途松手，离场动画播了但没走完，页面并没有离开。
-- 页面在 `pause` 状态下被 `dispose`，你等的那个 `resume` 永远不会来——资源就泄漏在那儿。
-
-库把这些账算过一遍，给出**配对且幂等**的回调：每个 `start` 必有 `stop`，每个 `pause` 必有 `resume` 或 `stop`，缺的那一半在 `dispose` 时补发。所以**成对写代码就是安全的**：`onPageResume` 里起的东西在 `onPagePause` 里停掉，不用再操心页面是怎么走的。
-
-## 前置：必须注册 `FlRouteObserver`
+## 1. 注册观察者
 
 ```dart
-MaterialApp(
-  navigatorObservers: [FlRouteObserver.instance], // ← 少了这行，四个可见性事件全不触发
-  home: const HomePage(),
-)
+MaterialApp(navigatorObservers: [FlRouteObserver()])            // 根：单例
+ShellRoute(observers: [FlRouteObserverProxy()])                  // 每个嵌套 Navigator 各 new 一个
 ```
 
-不注册**不会抛异常**，只是 `onPageStart` / `onPageResume` / `onPagePause` / `onPageStop` 静默失效（debug 下 `debugPrint` 提示一次，且每进程只打一遍）。改完涉及生命周期的代码，先确认这行在。
+同一实例挂两个 `Navigator` 会断言失败。不注册不报错，只是可见性回调不来（动画回调照常）。先读项目路由配置再决定加在哪。其他框架写法见 `sc-route.md` §9。
 
-- **嵌套 `Navigator` 要各自注册一次**，复用同一个 `FlRouteObserver.instance`。用 `Navigator` 做 tab 内独立栈、或用 go_router / auto_route 的 shell route 时特别容易漏掉里层。
-- go_router / auto_route 的写法各不相同，**先读本项目的路由配置文件再决定加在哪里**，不要默认只加在 `MaterialApp` 上。具体写法见 `references/recipes.md` 第 9 节。
-- 转场动画那四个回调**不依赖注册**（直接监听 `ModalRoute.animation`）。所以「动画回调有、可见性回调没有」这个症状 = 没注册。
-
-## 选哪个入口
-
-先看页面长什么样，再选入口。不要默认全都用 `FlPageLifecycleMixin`。
+## 2. 选入口
 
 | 页面形态 | 用 |
 |---|---|
-| 普通路由页（`StatefulWidget`） | `FlPageLifecycleMixin` |
-| `PageView` / `TabBarView` 的子页 | `FlPageViewScope` 包裹 + 子页 `observePageView => true` |
-| `StatelessWidget`，或不想再加 mixin，或只观测某个子树 | `FlPageLifecycleView` |
-| 逻辑在 Controller / ViewModel 里 | `FlPageControllerMixin` + 页面转发 |
-| 只要 App 前后台 | `FlAppLifecycleMixin` |
-| 只要转场动画 | `FlAnimationLifecycleMixin` |
-| 只要路由事件（回调名是 `onRouteStart/Resume/Pause/Stop`） | `FlPageRouteMixin` |
+| 普通路由页 | `FlPageLifecycleMixin`（默认） |
+| `PageView`/`TabBarView`/`IndexedStack` 子页 | 容器 `FlPageIndexScope.wrapChildren` + 子页 `observePageIndex => true`，缺一不可 |
+| `StatelessWidget` / 只观测子树 | `FlPageLifecycleView` |
+| 逻辑在 Controller/ViewModel | `FlPageControllerMixin` + 页面手动转发 |
+| 只要前后台 / 转场动画 / 路由事件 | `FlAppLifecycleMixin` / `FlAnimationLifecycleMixin` / `FlPageRouteMixin`（回调叫 `onRoute*`） |
 
-**这些入口不能叠加。** 后四个和 `FlPageLifecycleMixin` 订阅同一批源，成员名也会撞（`isCurrent`、`routeName`、`appLifecycleChanged`、`routePageStart` 等）。叠加的后果不只是收到两遍事件——最后混入的那个 mixin 的实现被调两次，另一个状态机根本不跑。**选一个。**
+库里的入口 mixin **不能叠加**（`FlStateEventBusMixin` 除外）。复用逻辑叠自己的：`mixin M<T extends StatefulWidget> on State<T>, FlPageLifecycleMixin<T>`。
 
-唯一正确的叠加形式是叠项目自己写的 mixin：
+## 3. resume/pause 还是 start/stop
 
-```dart
-mixin MyTrackMixin<T extends StatefulWidget> on State<T>, FlPageLifecycleMixin<T> { }
+唯一差别：弹窗（`PopupRoute` 或 `opaque: false` 路由）盖上来**只发 pause，不发 stop**。问一句「弹窗期间这件事该不该继续」：
 
-class _S extends State<P> with FlPageLifecycleMixin, MyTrackMixin { }
-```
-
-（`FlStateEventBusMixin` 是例外，它和生命周期无关，可以放心一起混入。）
-
-## resume/pause 还是 start/stop
-
-这是接入时唯一真正需要动脑的地方，也是最容易埋 bug 的地方。两对回调的区别只有一处：**dialog / bottomSheet / popupMenu 盖上来时，只发 `pause`，不发 `stop`。**
-
-判断标准就一句话：**弹窗盖住页面时，这件事该不该继续？**
-
-| 弹窗期间…… | 用 | 典型场景 |
+| 弹窗期间 | 用 | 场景 |
 |---|---|---|
-| **该停** | `onPageResume` / `onPagePause` | 视频/音频播放、动画、相机预览、地图定位、耗电的传感器 |
-| **该继续** | `onPageStart` / `onPageStop` | 列表轮询、WebSocket、页面曝光埋点与停留时长、倒计时 |
+| 该停 | `onPageResume` / `onPagePause` | 视频音频、动画、相机、传感器 |
+| 该继续 | `onPageStart` / `onPageStop` | 轮询、WebSocket、曝光与停留时长、倒计时 |
 
-理由：弹窗弹出来时用户**还在这个页面上**。视频该停（不然弹窗上盖着声音在响），但订单列表的轮询不该停（用户开了个筛选面板，回来当然希望数据是新的），停留时长也不该在这时候结算（他没离开）。
+两对可同时用。
 
-**别不假思索地一律用 `resume/pause`**——轮询用 `resume/pause` 的直接后果就是「一弹筛选面板刷新就断了」这类线上问题。需求描述里往往已经写明了期望（「弹 bottomSheet 出来轮询就停了，其实用户还在这个页面上」= 要 `start/stop`），**照描述选**。
-
-拿不准就问：这件事的成本是「用户听得见/看得见」的，还是「后台默默花点流量」的？前者用 `resume/pause`，后者用 `start/stop`。两对都用也可以（埋点走 `start/stop`、播放器走 `resume/pause`），它们是独立的两层。
-
-## 最常用的写法
+## 4. 写法
 
 ```dart
-class _DetailPageState extends State<DetailPage> with FlPageLifecycleMixin {
-  Timer? _poll;
-
+class _S extends State<Page> with FlPageLifecycleMixin {
   @override
-  void onPageResume() {
-    _poll = Timer.periodic(const Duration(seconds: 5), (_) => _refresh());
-  }
-
+  void onPageResume() => _player.play();
   @override
-  void onPagePause() {
-    _poll?.cancel();
-    _poll = null;
-  }
-
-  @override
-  Widget build(BuildContext context) => const Scaffold(body: Text('Detail'));
+  void onPagePause() => _player.pause();
 }
 ```
 
-两个开关（重写成 getter，**必须整个生命周期恒定**，debug 有 assert 拦）：
+- 开关（getter，**取值必须恒定**）：`observePageIndex`（页码容器子页）、`observeAppLifecycle`（要 App 事件），默认都 `false`。
+- 状态：可见 `isPageAppeared`（别用 `isCurrent`）、可交互 `isPageResumed`、前台 `isForeground`。
+- 重写 `onLifecycleStateChanged` / `appLifecycleChanged` 必须调 `super`。
+- `onPageInit` / `onPageContextReady` 在构建期，别 `setState`。
+- `onPageDispose` 里 `routeName` 已为 null，要用在 `onPageStop` 读。
 
-| Getter | 默认 | 什么时候开 |
-|---|---|---|
-| `observePageView` | `false` | 这个页面是 `PageView` / `TabBarView` 的子页 |
-| `observeAppLifecycle` | `false` | 需要 `onAppForeground` / `onAppBackground` 等五个 App 级事件。每个实例多两条全局流订阅，按需开 |
-
-判断状态用这几个 getter，随时可读、不需要订阅：
-
-| 想知道 | 读 | 别读 |
-|---|---|---|
-| 页面可见吗 | `isPageAppeared` | ~~`isCurrent`~~（dialog 一盖就 false） |
-| 页面可交互吗 | `isPageResumed` | — |
-| App 在前台吗 | `isForeground` | — |
-| 是不是栈顶（真的想知道栈顶时才用） | `isCurrent` | — |
-
-## 事件时序
+## 5. 时序
 
 ```
-push 进来        onPageInit → onPageContextReady → onPagePostFrame
-                 → onPageStart → onPageResume → onPageEnterAnimationEnd
-
-被路由覆盖        onPagePause → onPageStop   ...   onPageStart → onPageResume
-被 dialog 覆盖    onPagePause                ...   onPageResume        （不 stop）
-
-自己被 pop       onPageLeaveAnimationStart → onPagePause → onPageStop
-                 → onPageLeaveAnimationEnd → onPageDispose
-
-iOS 侧滑中途放弃  onPageLeaveAnimationStart → onPageEnterAnimationStart
-                 → onPageEnterAnimationEnd            （不 pause，不 stop）
+push 进来      Init → ContextReady → PostFrame → Start → Resume → EnterAnimationEnd
+被路由覆盖     Pause → Stop  …  Start → Resume
+被弹窗覆盖     Pause         …  Resume
+自己 pop       LeaveAnimationStart → Pause → Stop → LeaveAnimationEnd → Dispose
+iOS 侧滑放弃   LeaveAnimationStart → EnterAnimationStart → EnterAnimationEnd（无 pause/stop）
 ```
 
-- `onPagePostFrame` 一定在第一个 `onPageStart` 之前，可以在它里面量 `RenderObject` 尺寸，`onPageStart` 里直接用。
-- 首页（`home`）没有转场，两个入场动画事件都不发。
-- `onPageEnterAnimationStart` **首次进入通常不发**（监听器在 `onPageContextReady` 时才绑上）。想表达「页面正在出现」用 `onPageContextReady`。
-- `onPageLeaveAnimationStart` **不代表页面会离开**（iOS 侧滑放弃就会反转）。不可逆的收尾放 `onPageLeaveAnimationEnd` 或 `onPageDispose`。
-- `onPageDispose` 永远是最后一个。此时 `routeName` 已是 `null`，要用路由信息就在 `onPageStop` 里读。
-- 重写 `onLifecycleStateChanged` 必须调 `super`；重写 `appLifecycleChanged` **也必须调 `super`**（它是三个原始 App 事件的分发器，漏了会静默失效）。
-- `PageView` 子页的 `start` / `stop` 到达时机是**帧末**，不是同步。同一帧内所有隐藏先于所有显示。
+`EnterAnimationEnd` 可能触发两次，须幂等；`LeaveAnimationStart` 不代表会离开，不可逆操作放 `LeaveAnimationEnd` / `Dispose`。
 
-## PageView / TabBarView 子页：两步都要做
-
-`PageView` 的子页全都被 build 且保活，路由事件说明不了哪个在屏上，所以要换成按页码驱动：
+## 6. 页码容器
 
 ```dart
-PageView(
-  controller: _controller,
-  children: FlPageViewScope.wrapChildren(   // 第 1 步：注入页码
-    controller: _controller,
-    children: const [FeedTab(), ProfileTab()],
-  ),
-)
+PageView(controller: c, children: FlPageIndexScope.wrapChildren(controller: c, children: pages))
+// 子页
+@override
+bool get observePageIndex => true;
 ```
+
+- `controller`：`PageController` / `TabController` / `ValueListenable<int>`（`IndexedStack` 用同一个 `ValueNotifier<int>` 驱动 index 和 Scope）。构造函数非 const。
+- **嵌套时每层都要包**，漏包不报错（`IndexedStack` 连提示都没有）。
+- 滚动容器**停稳才提交**：`animateToPage` 掠过的页不发事件，`jumpToPage` 与 `ValueListenable` 当场提交。
+
+## 7. 接口（全部公开 API，签名照源码）
 
 ```dart
-class _FeedTabState extends State<FeedTab> with FlPageLifecycleMixin {
-  @override
-  bool get observePageView => true;   // 第 2 步：否则这个 tab 在首帧就 start 了
-}
+import 'package:fl_page_lifecycle/fl_page_lifecycle.dart';   // 唯一入口，别 import src/
 ```
 
-- 只包不开开关 → 子页首帧全部 `start`，等于没做懒加载。
-- 只开开关不包 → 拿不到页码，可见性永远不变。
-- `controller` 只接受 `PageController` 或 `TabController`；构造函数**不是 `const`**（带 assert），写 `const FlPageViewScope(...)` 编译不过。
-- `PageView.builder` 用 `FlPageViewScope.wrapItemBuilder`。
-- 一个 `PageController` 不要给多个 `PageView` 共用（页码解析不出来）。
-- 作用域可嵌套：子页可见要求**每一层祖先也都在自己宿主的当前页**。外层划走，内层当前 tab 也会 stop。
+**`enum FlLifecycleState`**（18 个，按声明顺序）：`onPageInit` `onPageContextReady` `onPagePostFrame` `onPageReassemble` `onPageEnterAnimationStart` `onPageStart` `onPageResume` `onPageEnterAnimationEnd` `onPagePause` `onPageStop` `onPageLeaveAnimationStart` `onPageLeaveAnimationEnd` `onPageDispose` `onAppResume` `onAppInactive` `onAppPause` `onAppForeground` `onAppBackground`。getter：`isPageResume` `isPagePause` `isAppEvent`。
 
-## 提交前照着过一遍
+**`mixin FlPageLifecycleMixin<T extends StatefulWidget> on State<T>`**
 
-- [ ] `FlRouteObserver.instance` 注册了，**每个嵌套 `Navigator` 也注册了**
-- [ ] 判可见性用 `isPageAppeared`，没有用 `isCurrent`
-- [ ] `onPageResume` 里起的资源，在 `onPagePause` 里成对停掉了（或 `start`/`stop` 成对）
-- [ ] `resume/pause` 与 `start/stop` 是按「弹窗期间该不该继续」选的，不是随手选的
-- [ ] 没有叠加 `FlPageRouteMixin` / `FlAnimationLifecycleMixin` / `FlAppLifecycleMixin` 到 `FlPageLifecycleMixin` 上
-- [ ] `observePageView` / `observeAppLifecycle` 返回字面常量，没有跟着 state 变
-- [ ] 重写 `onLifecycleStateChanged` 或 `appLifecycleChanged` 的地方都调了 `super`
-- [ ] `observeEvent<T>` 只在 `initState` 里调一次（写进 `build` 会随重建线性增长；重复注册被静默忽略 + debug assert）
-- [ ] 没有在页面级清理里调 `FlGlobalEventBus.destroy()` 或 `FlLifecycleManager.cancel()`——这两个是**全局**的，会连坐所有活着的页面
-- [ ] 用 `FlPageControllerMixin` 时，页面确实转发了事件（它自己不订阅任何东西），且 `onPageContextReady` 的签名是 `(BuildContext? context)`——**和页面 mixin 上的同名回调签名不同**
-- [ ] `await` 之后访问 `context` / `setState` 前查了 `mounted`
-- [ ] 跑过 `flutter analyze`（期望 0 error 0 warning）
+```dart
+// 可覆写开关（默认 false，取值恒定）
+bool get observePageIndex;   bool get observeAppLifecycle;
+// 只读
+String? routeName;  Object? arguments;        // ContextReady 之前、Dispose 时为 null
+bool isPageAppeared, isPageResumed, isForeground, isCurrent, isInPageScope;
+int pageIndex, currentPageIndex, pageScopeDepth;   // 不在 Scope 中为 -1
+// 可覆写回调，全部 void、@protected、默认空实现
+onPageInit()  onPageContextReady(String? routeName, Object? arguments)  onPagePostFrame()
+onPageReassemble()                        // 仅 debug 热重载
+onPageStart()  onPageResume()  onPagePause()  onPageStop()  onPageDispose()
+onPageEnterAnimationStart()  onPageEnterAnimationEnd()
+onPageLeaveAnimationStart()  onPageLeaveAnimationEnd()
+onAppResume()  onAppInactive()  onAppPause()  onAppForeground()  onAppBackground()  // 需 observeAppLifecycle
+onPageIndexChanged(int from, int to)      // 需在 Scope 内，只报本层
+// @mustCallSuper
+onLifecycleStateChanged(FlLifecycleState state)   // 18 个事件的统一出口
+appLifecycleChanged(AppLifecycleState state)      // 原始 App 状态分发器
+```
 
-交代改动时说清三件事：**改了哪些文件**、**每个生命周期回调里放了什么**、**上面清单里哪几条是这次特意处理的**（尤其 `FlRouteObserver` 注册位置和 dialog 覆盖的行为）。
+**`FlPageIndexScope`**（StatefulWidget，构造非 const）
 
-## 不适用的场景
+```dart
+FlPageIndexScope({Key? key, required int pageIndex, required Listenable controller, required Widget child})
+static List<Widget> wrapChildren({required Listenable controller, required List<Widget> children})
+static NullableIndexedWidgetBuilder wrapItemBuilder({required Listenable controller, required NullableIndexedWidgetBuilder builder})
+static int depthOf(BuildContext context)              // 不在 Scope 中 -1
+static int? indexOf(Listenable controller)            // 尚不可用时 null
+static int initialIndexOf(Listenable controller)
+static Listenable listenableOf(Listenable controller)
+```
 
-这个库回答**导航层面**的问题：「用户此刻在不在这个页面上」。它**不检测**：
+**`FlPageLifecycleView`**（包一层 Widget，不混 mixin；mixin 的 getter 不对外暴露）
 
-- widget 滚出 `ListView` 视口 → 用 [`visibility_detector`](https://pub.dev/packages/visibility_detector)
-- 同一路由内被不透明 widget 盖住 → 两个库都不检测
-- 「卡片露出了百分之多少」→ 用 `visibility_detector`
+```dart
+const FlPageLifecycleView({Key? key, bool observePageIndex = false, bool observeAppLifecycle = false,
+  void Function(BuildContext context, FlLifecycleState state)? onStateChanged,
+  void Function(BuildContext context, String? routeName, Object? arguments)? onRouteParam,
+  void Function(BuildContext context, int from, int to)? onPageIndexChanged,
+  required Widget child})
+// typedef: FlPageLifecycleCallback / FlPageRouteParamCallback / FlPageIndexChangedCallback
+```
 
-信息流里自动播视频这类场景**两个一起用**：这个库确认 Feed 页面本身是 resumed 的（否则会在用户已经跳走的页面上继续播），`visibility_detector` 确认哪张卡在屏上。
+**`mixin FlPageControllerMixin`**（无 `on` 约束；不订阅任何东西，没有 dispose）
 
-反过来，纯 App 前后台且不需要过滤瞬时打断（来电、通知栏下拉）的话，Flutter 自带的 `WidgetsBindingObserver` 就够。
+```dart
+@mustCallSuper void onLifecycleChanged(FlLifecycleState state, {BuildContext? context})  // 页面转发入口
+void setupRouteInfo(String? name, Object? arguments)
+FlLifecycleState lifecycleState;  bool isPageResume, isPagePause, isForeground;  String? routeName;  Object? arguments;
+// 回调与主 mixin 同名的 18 个，仅两处不同：
+void onPageContextReady(BuildContext? context)    // ⚠️ 签名不同
+void onPageIndexChanged(int from, int to)         // 不经 onLifecycleChanged 分发，页面要单独转发
+```
+
+**独立 mixin**（均 `on State<T>`，不与主 mixin 叠加）
+
+```dart
+FlPageRouteMixin:  ModalRoute? modalRoute; String? routeName; Object? arguments; bool isCurrent, hasRoute;
+                   onPageContextReady(String?, Object?)  onRouteStart()  onRouteResume()  onRoutePause()  onRouteStop()
+                   + 四个 on Page Enter/Leave Animation Start/End 回调
+FlAppLifecycleMixin:        bool isForeground, hasInit;  onAppForeground()  onAppBackground()  appLifecycleChanged(AppLifecycleState)
+FlAnimationLifecycleMixin:  onPageEnterAnimationStart/End()  onPageLeaveAnimationStart/End()
+```
+
+**观察者与单例**
+
+```dart
+FlRouteObserver()               // factory，恒返回 FlRouteObserver.instance
+FlRouteObserverProxy()          // 无参，每个嵌套 Navigator 各 new 一个
+FlLifecycleManager.instance     // bool isForeground; Stream<bool> stream（已过滤）; Stream<AppLifecycleState> lifecycle;
+                                // void listen(); void cancel()  ← 进程级，页面里别调
+```
+
+**事件总线**
+
+```dart
+mixin FlStateEventBusMixin on State:  observeEvent<T>(void Function(T event) onData)   dispatchEvent<T>(T event)   // dispose 自动取消
+FlGlobalEventBus（静态）:  Stream<T> observeEvent<T>()   void dispatchEvent<T>(T event)
+                          void configure(FlIEventBus bus)   Future<void> destroy()   ← 进程级，页面里别调
+FlEventBus({bool sync = false}) / FlEventBus.customController(StreamController<dynamic>)  implements FlIEventBus
+FlIEventBus:  Stream<T> on<T>()   void fire(dynamic event)   Future<void> destroy()
+```
+
+## 8. 按需读（一次只读一个）
+
+| 要做的事 | `references/` |
+|---|---|
+| 视频、埋点、轮询/WebSocket、App 前后台 | `sc-page.md` |
+| 懒加载、嵌套容器、`onPageIndexChanged`、`IndexedStack` | `sc-index.md` |
+| 各路由框架注册、`popUntil`/`pushAndRemoveUntil`、转场动画、tab 内独立栈 | `sc-route.md` |
+| 事件总线、子树观测、Controller、统一埋点、`setState` 报错 | `sc-arch.md` |
+| 行为异常排查 | `pitfalls.md` |
+
+## 9. 交付前
+
+```bash
+python3 docs/ai/scripts/verify_api_names.py <改动目录>   # 编造的名字 + 高频接错方式；传目录，别传单文件
+flutter analyze
+```
+
+回调不来先跑脚本，再查 `pitfalls.md`。`❌` 是确定错误，`⚠️` 取决于扫描范围。
+
+自检：版本已确认 · 根 `FlRouteObserver()`、每个嵌套栈一个新 proxy · 用 `isPageAppeared` 判可见 · 起停成对且按第 3 节选对 · 没叠加入口 mixin、开关恒定、该调的 `super` 调了 · `observeEvent` 只在 `initState` 调一次，没调 `FlGlobalEventBus.destroy()` / `FlLifecycleManager.cancel()` · `await` 后查 `mounted` · 页码容器每层都包了。
+
+交代改动时说明：改了哪些文件、观察者注册在哪、两对回调按什么选的。

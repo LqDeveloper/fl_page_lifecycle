@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:meta/meta.dart';
 
 import '../delegate/fl_page_route_delegate.dart';
+import '../delegate/fl_page_visibility_state.dart';
 import '../lifecycle/fl_lifecycle_guard.dart';
 import '../lifecycle/lifecycle_route_aware.dart';
 
@@ -15,8 +16,10 @@ import '../lifecycle/lifecycle_route_aware.dart';
 /// 与 `FlPageLifecycleMixin` 的区别：本 mixin 只做**路由层面**的收敛，不做
 /// PageView 页码判断，也不关心页面是否真的可见——弹窗覆盖同样按 pause 转发。
 ///
-/// 它并非完全不做幂等：[onRouteStart] / [onRouteStop] 由 `_hasAppear` 保证
-/// 一次性，未曾出现过就收到 resume 时会补发 start，`routePageStop` 会先补
+/// 它并非完全不做幂等：[onRouteStart] / [onRouteStop] 由 `FlPageVisibilityState` 保证
+/// 一次性，未曾出现过就收到 resume 时会补发 start，已出现过又收到 start 时
+/// 只补发 [onRouteResume]（弹窗被 `pushReplacement` / `pushAndRemoveUntil`
+/// 换掉、随后上层被 pop 的情形；与 resume 路径一样不判重），`routePageStop` 会先补
 /// [onRoutePause] 再发 [onRouteStop]，`dispose` 也会补发 pause / stop 对。
 /// 真正**没有**守卫的是 [onRoutePause]——它无条件转发，页面从未出现过或
 /// 已经处于 pause 时照样会发。
@@ -82,7 +85,19 @@ mixin FlPageRouteMixin<T extends StatefulWidget> on State<T>
   /// 是否已成功挂到某个路由上。为 false 时下面的路由回调都不会触发。
   bool get hasRoute => _routeDelegate.isAttached;
   bool _hasDispose = false;
-  bool _hasAppear = false;
+
+  /// start / stop 的配对，规则见 [FlPageVisibilityState]，与 `FlPageLifecycleMixin`
+  /// 共用同一份实现。`guardResume: false` 保留本 mixin 历来的行为：
+  /// [onRouteResume] / [onRoutePause] 不判重、无条件转发。
+  late final FlPageVisibilityState _visibility = FlPageVisibilityState(
+    onStart: () => FlLifecycleGuard.run(onRouteStart),
+    onResume: () => FlLifecycleGuard.run(onRouteResume),
+    onPause: () => FlLifecycleGuard.run(onRoutePause),
+    onStop: () => FlLifecycleGuard.run(onRouteStop),
+    // 没有 `ModalRoute` 的页面 `isCurrent` 恒为 false，所以先判 `isAttached`。
+    isCovered: () => _routeDelegate.isAttached && !_routeDelegate.isCurrent,
+    guardResume: false,
+  );
 
   @override
   void initState() {
@@ -91,7 +106,7 @@ mixin FlPageRouteMixin<T extends StatefulWidget> on State<T>
       if (_hasDispose) {
         return;
       }
-      if (_hasAppear) {
+      if (_visibility.isAppeared) {
         return;
       }
       // 已挂到路由上时只有栈顶才算露面：本 mixin 向 [FlRouteObserver] 订阅是在
@@ -99,12 +114,10 @@ mixin FlPageRouteMixin<T extends StatefulWidget> on State<T>
       // 「本页被 push、同一帧内又被别的路由盖住」时收不到那次 stop，不加判断就会
       // 给一个从未露面的页面发出 start。没有 `ModalRoute` 的页面 `isCurrent`
       // 恒为 false，不能用它挡——那会让非路由页面永久收不到任何回调。
-      if (_routeDelegate.isAttached && !_routeDelegate.isCurrent) {
+      if (_visibility.isCovered) {
         return;
       }
-      _hasAppear = true;
-      FlLifecycleGuard.run(onRouteStart);
-      FlLifecycleGuard.run(onRouteResume);
+      _visibility.start();
     });
   }
 
@@ -133,10 +146,7 @@ mixin FlPageRouteMixin<T extends StatefulWidget> on State<T>
     // 时序契约由 test/dispose_contract_test.dart 对拍锁住。
     _routeDelegate.detach();
     try {
-      if (_hasAppear) {
-        FlLifecycleGuard.run(onRoutePause);
-        FlLifecycleGuard.run(onRouteStop);
-      }
+      _visibility.stop();
     } finally {
       super.dispose();
     }
@@ -154,37 +164,36 @@ mixin FlPageRouteMixin<T extends StatefulWidget> on State<T>
   @protected
   void onPageContextReady(String? routeName, Object? arguments) {}
 
-  /// 入场转场动画开始播放（`AnimationStatus.forward`）。
+  /// 入场转场动画开始（`AnimationStatus.forward`）。
   ///
-  /// **首次 push 入场时通常不会触发**：动画监听器在 [onPageContextReady]
-  /// （首次 `didChangeDependencies`）中才绑定，而 Navigator 在更早的
-  /// `didPush` 里就已把动画推进到 `forward`。需要「页面开始进场」这个时机，
-  /// 请用 [onPageContextReady]。
+  /// 首次 push 入场时通常收不到，实际主要在动画折返（iOS 侧滑返回中途放弃）时触发。
+  /// 需要「页面开始进场」这个时机请用 [onPageContextReady]。
   ///
-  /// 实际能收到的主要是**动画折返**：iOS 侧滑返回中途放弃，动画由
-  /// `reverse` 回到 `forward`，此时触发，随后是 [onPageEnterAnimationEnd]。
+  /// 完整的触发条件与时序见 `FlLifecycleState.onPageEnterAnimationStart`。
   @protected
   void onPageEnterAnimationStart() {}
 
-  /// 入场转场动画播放完毕。iOS 侧滑返回中途放弃时会重复发出。
+  /// 入场转场动画结束（`AnimationStatus.completed`）。
+  ///
+  /// **可能触发两次**（iOS 侧滑返回中途放弃），放在这里的请求、埋点须自行幂等。
+  ///
+  /// 完整的触发条件与时序见 `FlLifecycleState.onPageEnterAnimationEnd`。
   @protected
   void onPageEnterAnimationEnd() {}
 
-  /// 退场转场动画开始播放（`AnimationStatus.reverse`）。
+  /// 退场转场动画开始（`AnimationStatus.reverse`）。
   ///
-  /// 触发来源：自身被 pop 时动画开始反向；iOS 侧滑返回手势开始拖动。
+  /// **不代表页面一定会退出**（侧滑中途放弃时也会触发），不可逆操作请放在
+  /// [onPageLeaveAnimationEnd]。
+  /// 与 [onRouteStop] 相互独立，先后顺序不作保证。
   ///
-  /// **不代表页面一定会退出**：iOS 侧滑返回中途放弃时也会发出，随后是
-  /// [onPageEnterAnimationStart] → [onPageEnterAnimationEnd] 而非
-  /// [onPageLeaveAnimationEnd]。因此释放资源、上报离开埋点这类不可逆操作
-  /// 应放在 [onPageLeaveAnimationEnd] 或 `dispose` 中。
-  ///
-  /// 与 [onRouteStop] 相互独立：普通 pop 时两者几乎同时发生，先后不作保证；
-  /// 侧滑手势场景下本回调远早于 [onRouteStop]（手势确认返回后才 pop）。
+  /// 完整的触发条件与时序见 `FlLifecycleState.onPageLeaveAnimationStart`。
   @protected
   void onPageLeaveAnimationStart() {}
 
-  /// 退场转场动画播放完毕。
+  /// 退场转场动画结束（`AnimationStatus.dismissed`），页面确实退出了。
+  ///
+  /// 完整的触发条件与时序见 `FlLifecycleState.onPageLeaveAnimationEnd`。
   @protected
   void onPageLeaveAnimationEnd() {}
 
@@ -208,42 +217,29 @@ mixin FlPageRouteMixin<T extends StatefulWidget> on State<T>
 
   @internal
   @override
-  void routePageStart() {
-    if (_hasAppear) {
-      return;
-    }
-    _hasAppear = true;
-    FlLifecycleGuard.run(onRouteStart);
-    FlLifecycleGuard.run(onRouteResume);
-  }
+  @nonVirtual
+  void routePageStart() => _visibility.start();
 
   @internal
   @override
+  @nonVirtual
   void routePageResume() {
     // 尚未露面时补发 start + resume：页面可能在首帧就被同一帧 push 的弹窗盖住，
     // 被 `initState` 的栈顶判断挡掉了 start，此刻弹窗关闭正是它第一次真正露面。
-    if (!_hasAppear) {
-      routePageStart();
+    if (!_visibility.isAppeared) {
+      _visibility.start();
       return;
     }
-    FlLifecycleGuard.run(onRouteResume);
+    _visibility.resume();
   }
 
   @internal
   @override
-  void routePagePause() {
-    FlLifecycleGuard.run(onRoutePause);
-  }
+  @nonVirtual
+  void routePagePause() => _visibility.pause();
 
   @internal
   @override
-  void routePageStop() {
-    if (!_hasAppear) {
-      return;
-    }
-    // 与 routePageStart 一致：标志位先翻转再回调，回调里再次触发时能被挡住。
-    _hasAppear = false;
-    FlLifecycleGuard.run(onRoutePause);
-    FlLifecycleGuard.run(onRouteStop);
-  }
+  @nonVirtual
+  void routePageStop() => _visibility.stop();
 }

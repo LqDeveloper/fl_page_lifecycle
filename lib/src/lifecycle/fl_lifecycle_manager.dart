@@ -33,13 +33,13 @@ class FlLifecycleManager extends WidgetsBindingObserver {
   /// paused 时置 true，resumed 时消费后置 false。
   bool _isFromAppPause = false;
 
-  /// 标记是否已经发送过初始前台事件（冷启动时首次 resumed）
+  /// 标记 App 是否已经处于过前台（首次 resumed 已经发生）
   ///
-  /// 用于区分冷启动的首次 resumed 和后续 inactive→resumed 短暂中断。
-  /// listen() 时若 app 已处于 resumed 状态，也会将此置为 true。
+  /// 用于区分「订阅之后才到来的首次 resumed」和后续 inactive→resumed 短暂中断。
+  /// listen() 时若 app 已处于 resumed 状态，直接置为 true 且**不发事件**。
   ///
-  /// **一旦置位就不再复位**，[cancel] 也不复位——补发只该在整个进程的冷启动发生
-  /// 一次；`cancel` → `listen` 之后再补发一次，对一直在听的订阅者就是个假事件。
+  /// **一旦置位就不再复位**，[cancel] 也不复位——`cancel` → `listen` 之后若再发
+  /// 一次 true，对一直在听的订阅者就是个假事件。
   bool _hasEverSentForeground = false;
 
   /// 当前是否处于前台（同步读取，不依赖 stream）
@@ -55,11 +55,10 @@ class FlLifecycleManager extends WidgetsBindingObserver {
   /// 基于 _isFromAppPause 判断，过滤掉 inactive→resumed 的 transient 状态。
   /// 仅当 paused→resumed 完整经过时发送 true。
   ///
-  /// ## 冷启动的那一次 true 只有首个订阅者收得到
+  /// ## 订阅时已在前台，不会收到初始的 true
   ///
-  /// [listen] 时若 App 已处于 resumed，会补发一次 `true`（见 [listen]），
-  /// 但控制它的 `_hasEverSentForeground` 是**全局**标志位：整个进程只补发一次
-  /// （[cancel] 也不会复位它），之后创建的页面**永远等不到**这个初始事件。
+  /// 这条流只报告**变化**：订阅时 App 已处于 resumed 的，不补发任何事件；
+  /// 只有订阅早于 App 的首次 resumed 时，那一次 resumed 才会发出 `true`。
   ///
   /// 因此不要用「收到过 foreground」来判断当前在不在前台——那是个事件流，
   /// 不是状态。要判断状态请直接读 [isForeground]，它同步读
@@ -91,13 +90,11 @@ class FlLifecycleManager extends WidgetsBindingObserver {
     _hasListen = true;
     WidgetsBinding.instance.addObserver(this);
 
-    // 冷启动时，Flutter 引擎可能已在 listen() 之前发出了 resumed 事件。
-    // 通过 scheduleMicrotask 让 subscriber 有机会先 attach 到 stream，
-    // 然后补发一个 foreground=true 事件。
-    if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed &&
-        !_hasEverSentForeground) {
+    // 订阅时 App 已在前台：只记下「前台事件已经发生过」，不补发。补发会被晚到的
+    // 首个订阅者当成一次真正的回到前台，而这次订阅可能发生在启动很久之后。
+    // 尚未 resumed 就订阅的（真正的冷启动）仍由 _notifyObserver 的首次 resumed 发出。
+    if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
       _hasEverSentForeground = true;
-      scheduleMicrotask(() => _emitForeground(true));
     }
   }
 
@@ -117,10 +114,10 @@ class FlLifecycleManager extends WidgetsBindingObserver {
     _hasListen = false;
     _isFromAppPause = false;
     // **不**复位 _hasEverSentForeground：两条流不再关闭（见上），已有订阅者仍然
-    // 在听。复位会让下一次 [listen] 满足「resumed 且没发过初始事件」的条件，
-    // 给它们补发一次 App 从未离开过的 foreground=true——宿主在 onAppForeground
+    // 在听。复位会让之后的一次 inactive → resumed 被当成「首次 resumed」，
+    // 给它们发一次 App 从未离开过的 foreground=true——宿主在 onAppForeground
     // 里刷新列表 / 重校验登录态 / 恢复轮询就会被无故触发一次。
-    // 那次补发只该在冷启动发生一次，语义见 [_hasEverSentForeground]。
+    // 语义见 [_hasEverSentForeground]。
     WidgetsBinding.instance.removeObserver(this);
   }
 
@@ -196,8 +193,7 @@ class FlLifecycleManager extends WidgetsBindingObserver {
           _hasEverSentForeground = true;
           _emitForeground(true);
         } else if (!_hasEverSentForeground) {
-          // 冷启动首次 resumed（或 cancel→listen 后的首次 resumed），
-          // 订阅者尚未收到初始 foreground 事件，补发。
+          // 订阅早于 App 的首次 resumed（真正的冷启动）：这是第一次进入前台。
           _hasEverSentForeground = true;
           _emitForeground(true);
         }

@@ -182,16 +182,20 @@ mixin FlPageControllerMixin {
   @protected
   void onPageResume() {}
 
-  /// 入场转场动画开始播放。
+  /// 入场转场动画开始（`AnimationStatus.forward`）。
   ///
-  /// **首次进入页面时通常不会触发**：动画监听器在 `onPageContextReady` 时才
-  /// 绑定，此时入场动画早已开始；需要「页面开始进场」请用 [onPageContextReady]。
-  /// 实际能收到的主要是动画折返（iOS 侧滑返回中途放弃）。
+  /// 首次 push 入场时通常收不到，实际主要在动画折返（iOS 侧滑返回中途放弃）时触发。
+  /// 需要「页面开始进场」这个时机请用 [onPageContextReady]。
+  ///
+  /// 完整的触发条件与时序见 `FlLifecycleState.onPageEnterAnimationStart`。
   @protected
   void onPageEnterAnimationStart() {}
 
-  /// 入场转场动画播放完毕。适合把重量级操作推迟到转场结束避免掉帧。
-  /// iOS 侧滑返回中途放弃时会重复发出。
+  /// 入场转场动画结束（`AnimationStatus.completed`）。
+  ///
+  /// **可能触发两次**（iOS 侧滑返回中途放弃），放在这里的请求、埋点须自行幂等。
+  ///
+  /// 完整的触发条件与时序见 `FlLifecycleState.onPageEnterAnimationEnd`。
   @protected
   void onPageEnterAnimationEnd() {}
 
@@ -203,16 +207,19 @@ mixin FlPageControllerMixin {
   @protected
   void onPageStop() {}
 
-  /// 退场转场动画开始播放：自身被 pop，或 iOS 侧滑返回手势开始拖动。
+  /// 退场转场动画开始（`AnimationStatus.reverse`）。
   ///
-  /// **不代表页面一定会退出**：侧滑中途放弃时也会触发，随后是
-  /// [onPageEnterAnimationStart] → [onPageEnterAnimationEnd]，而**不是**
-  /// [onPageLeaveAnimationEnd]。不可逆操作请放在 [onPageLeaveAnimationEnd]
-  /// 或 [onPageDispose]。与 [onPageStop] 相互独立，先后顺序不作保证。
+  /// **不代表页面一定会退出**（侧滑中途放弃时也会触发），不可逆操作请放在
+  /// [onPageLeaveAnimationEnd]。
+  /// 与 [onPageStop] 相互独立，先后顺序不作保证。
+  ///
+  /// 完整的触发条件与时序见 `FlLifecycleState.onPageLeaveAnimationStart`。
   @protected
   void onPageLeaveAnimationStart() {}
 
-  /// 退场转场动画播放完毕，位于 [onPageStop] 之后、[onPageDispose] 之前。
+  /// 退场转场动画结束（`AnimationStatus.dismissed`），页面确实退出了。
+  ///
+  /// 完整的触发条件与时序见 `FlLifecycleState.onPageLeaveAnimationEnd`。
   @protected
   void onPageLeaveAnimationEnd() {}
 
@@ -247,6 +254,6 @@ mixin FlPageControllerMixin {
   /// 所在 `PageView` 的页码变化，参数为 (旧页码, 新页码)。
   ///
   /// **不经 [onLifecycleChanged] 分发**——页码变化不属于 [FlLifecycleState]，
-  /// 需由页面侧在 `onPageViewChanged` 中直接调用本方法转发。
-  void onPageViewChanged(int from, int to) {}
+  /// 需由页面侧在 `onPageIndexChanged` 中直接调用本方法转发。
+  void onPageIndexChanged(int from, int to) {}
 }

@@ -1,5 +1,9 @@
 include: package:flutter_lints/flutter.yaml
 
+analyzer:
+  exclude:
+    - build/**
+
 linter:
   rules:
     # 这是个对外发布的 package，公共 API 就是对外契约。

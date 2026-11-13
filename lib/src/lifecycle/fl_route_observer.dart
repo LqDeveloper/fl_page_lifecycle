@@ -17,15 +17,23 @@ import 'lifecycle_route_aware.dart';
 /// )
 /// ```
 ///
-/// 嵌套 `Navigator` 需要各自注册一次，同一个 [instance] 可以复用。
+/// 本类是**单例**，因此只能挂在一个 `Navigator` 上。App 里存在多个同时存活的
+/// `Navigator`（go_router 的 `ShellRoute`、tab 内独立栈等）时，根 `Navigator`
+/// 用它，其余每一个各挂一个 `FlRouteObserverProxy`（见
+/// `fl_route_observer_proxy.dart`）——那里有原因与各框架的写法。
+///
+/// 这里有意写成代码块而不是 dartdoc 链接：本文件不 import 那个文件，
+/// 依赖方向只有 proxy → observer 一条，不成环。
+///
 /// 转场动画回调（`onPageEnterAnimationEnd` 等）不受影响，它们直接监听
 /// `ModalRoute.animation`。
 ///
 /// 语义上的两个要点：
 ///
 /// - **弹窗只 pause 不 stop**：上层 push 的是 `PopupRoute`（dialog /
-///   bottomSheet / PopupMenu）时，下方页面依然可见，因此只发 pause；关闭弹窗
-///   只发 resume。上层是普通路由才走 stop / start。
+///   bottomSheet / PopupMenu）或非不透明路由（`opaque: false`，如部分第三方
+///   底部弹层）时，下方页面依然可见，因此只发 pause；关闭时只发 resume。
+///   上层是不透明的普通路由才走 stop / start。
 /// - **只通知真正露出来的页面**：`pushAndRemoveUntil` / `popUntil` 的
 ///   `previousRoute` 常常仍被别的路由盖着，这类情况不会发出虚假的 start。
 class FlRouteObserver extends NavigatorObserver {
@@ -83,7 +91,7 @@ class FlRouteObserver extends NavigatorObserver {
   /// 各自演化的拷贝。
   ///
   /// [isPopup] 为 true（被移除的是 `PopupRoute`）时，下方页面只发 resume 不发
-  /// start：它被弹窗盖住时只收到过 pause、从未 stop，宿主的 `_hasAppeared` 仍是
+  /// start：它被弹窗盖住时只收到过 pause、从未 stop，宿主的 `isAppeared` 仍是
   /// true，此刻发 start 会被幂等判断整条吃掉，页面就再也收不到 resume。
   void _handleRouteGone(
     Route<dynamic> route,
@@ -118,10 +126,18 @@ class FlRouteObserver extends NavigatorObserver {
     }
   }
 
+  /// [route] 盖上来之后，它下面的页面是否仍然留在屏幕上。
+  ///
+  /// 除了 `PopupRoute`（dialog / bottomSheet），还包括**非不透明**的路由
+  /// （`PageRouteBuilder(opaque: false)`、以非不透明 `PageRoute` 实现的第三方
+  /// 底部弹层）：框架此时仍在绘制下层页面，下层只该收到 pause，不该收到 stop。
+  static bool _keepsBelowVisible(Route<dynamic> route) =>
+      route is PopupRoute || (route is TransitionRoute && !route.opaque);
+
   @override
   void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
     super.didPop(route, previousRoute);
-    _handleRouteGone(route, previousRoute, isPopup: route is PopupRoute);
+    _handleRouteGone(route, previousRoute, isPopup: _keepsBelowVisible(route));
   }
 
   /// [route] 是不是**真的**因为上面那个消失而露了出来。
@@ -146,14 +162,14 @@ class FlRouteObserver extends NavigatorObserver {
   @override
   void didRemove(Route route, Route? previousRoute) {
     super.didRemove(route, previousRoute);
-    _handleRouteGone(route, previousRoute, isPopup: route is PopupRoute);
+    _handleRouteGone(route, previousRoute, isPopup: _keepsBelowVisible(route));
   }
 
   @override
   void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
     super.didPush(route, previousRoute);
     final previousSubscribers = _listeners[previousRoute]?.toList();
-    final isPopup = route is PopupRoute;
+    final isPopup = _keepsBelowVisible(route);
     if (previousSubscribers != null) {
       for (final routeAware in previousSubscribers) {
         FlLifecycleGuard.run(

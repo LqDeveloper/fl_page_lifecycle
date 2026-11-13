@@ -2,8 +2,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../delegate/fl_app_lifecycle_delegate.dart';
+import '../delegate/fl_page_index_delegate.dart';
 import '../delegate/fl_page_route_delegate.dart';
-import '../delegate/fl_page_view_delegate.dart';
+import '../delegate/fl_page_visibility_state.dart';
 import '../lifecycle/fl_lifecycle_guard.dart';
 import '../lifecycle/fl_lifecycle_state.dart';
 import '../lifecycle/lifecycle_route_aware.dart';
@@ -36,7 +37,8 @@ import '../lifecycle/lifecycle_route_aware.dart';
 /// - **幂等**：重复触发被内部标志位挡掉，不会连发两次 start。
 /// - **顺序**：`onPagePostFrame` 一定早于首帧的 start，因此可以在 postFrame
 ///   里量好尺寸、start 里直接用。
-/// - **弹窗只 pause 不 stop**：被 `PopupRoute` 盖住时页面仍然可见，
+/// - **弹窗只 pause 不 stop**：被 `PopupRoute` 或非不透明路由
+///   （`opaque: false`）盖住时页面仍然可见，
 ///   判断可见性用 [isPageAppeared]，不要用 [isCurrent]。
 ///
 /// 每个事件的确切触发时机、不会触发的情形与典型时序，都写在
@@ -45,7 +47,7 @@ import '../lifecycle/lifecycle_route_aware.dart';
 ///
 /// ## 两个默认关闭的开关
 ///
-/// [observePageView] 与 [observeAppLifecycle] 默认都是 false，为的是摊薄实例
+/// [observePageIndex] 与 [observeAppLifecycle] 默认都是 false，为的是摊薄实例
 /// 成本（后者打开后每个实例多两条全局流订阅）。位于 `PageView` / `TabBarView`
 /// 中要按页码驱动可见性时开前者，需要 App 前后台事件时开后者。
 ///
@@ -73,11 +75,11 @@ mixin FlPageLifecycleMixin<T extends StatefulWidget> on State<T>
     onStateChanged: appLifecycleChanged,
   );
 
-  /// PageView 相关处理（判断是否位于 PageView、监听页码变化）全部委托给它。
-  late final FlPageViewDelegate _pageViewDelegate = FlPageViewDelegate(
-    onPageShow: _notifyPageStart,
+  /// 页码相关处理（判断是否位于按页码驱动的容器中、监听页码变化）全部委托给它。
+  late final FlPageIndexDelegate _pageIndexDelegate = FlPageIndexDelegate(
+    onPageShow: _notifyPageIndexShow,
     onPageHide: _notifyPageStop,
-    onIndexChanged: onPageViewChanged,
+    onIndexChanged: onPageIndexChanged,
   );
 
   /// 本页所在路由的名字（`RouteSettings.name`）。
@@ -91,35 +93,40 @@ mixin FlPageLifecycleMixin<T extends StatefulWidget> on State<T>
   /// [onPageContextReady] 之前、以及页面不处于任何路由中时为 null。
   Object? get arguments => _routeDelegate.arguments;
 
-  /// 本页是否位于 `PageView` 中，即是否命中了 `FlPageViewScope`。
+  /// 本页是否位于按页码驱动的容器（`PageView` / `TabBarView` / `IndexedStack`）中，
+  /// 即是否命中了 `FlPageIndexScope`。
   /// 首次 `didChangeDependencies` 之前恒为 false。
-  bool get isInPageView => _pageViewDelegate.isInPageView;
+  bool get isInPageScope => _pageIndexDelegate.isInPageScope;
 
-  /// 本页在 `PageView` 中的页码，由 `FlPageViewScope` 自动下发，**只读**。
+  /// 本页在所属容器中的页码，由 `FlPageIndexScope` 自动下发，**只读**。
   ///
-  /// 不在 PageView 中（或首次 `didChangeDependencies` 之前）为 -1。
-  int get pageIndex => _pageViewDelegate.pageIndex;
+  /// 不在任何 Scope 中（或首次 `didChangeDependencies` 之前）为 -1。
+  int get pageIndex => _pageIndexDelegate.pageIndex;
 
   /// 本页所在层当前展示的页码，未能确定时为 -1。
-  int get currentPageIndex => _pageViewDelegate.currentIndex;
+  int get currentPageIndex => _pageIndexDelegate.currentIndex;
 
-  /// `FlPageViewScope` 的嵌套深度，取值与 `ScrollNotification.depth` 对齐：
+  /// `FlPageIndexScope` 的嵌套深度，取值与 `ScrollNotification.depth` 对齐：
   /// 最外层为 0，每往里嵌一层（如 `PageView` 里再套 `TabBarView`）加一；
   /// 不在任何 Scope 中为 -1。
-  int get pageViewDepth => _pageViewDelegate.depth;
+  int get pageScopeDepth => _pageIndexDelegate.depth;
 
-  /// 是否启用 PageView 可见性判定，**默认 false**：不做判定，
+  /// 是否按页码驱动可见性，**默认 false**：不做判定，
   /// 页面首帧后直接按普通页面发出 start / resume。
   ///
-  /// 页面位于 `PageView` / `TabBarView` 中（外面包了 `FlPageViewScope`）、
-  /// 需要由页码而非路由驱动 start / stop 时，覆写它返回 true。
+  /// 页面位于 `PageView` / `TabBarView` / `IndexedStack` 中（外面包了
+  /// `FlPageIndexScope`）、需要由页码而非路由驱动 start / stop 时，覆写它返回 true。
+  ///
+  /// 嵌套时**每一层容器都要包 `FlPageIndexScope`**：只包外层、漏掉内层不会报错，
+  /// 本页会静默绑到外层的 Scope 上，切内层子页收不到 start / stop。打开本开关后
+  /// debug 下会检查离本页最近的那个容器有没有包上，没包就提示一次。
   ///
   /// **必须在整个生命周期内保持不变**，debug 下有断言把关。可见性状态机是
   /// 有状态的：中途翻转会留下对不齐的中间态——由 false 变 true 时，本页可能
   /// 已经在首帧发过 start，此刻却不是当前页，于是停在「屏幕外却是 started」；
   /// 由 true 变 false 时则可能停在「本该可见却是 stopped」。要动态控制可见性，
-  /// 请改用 `FlPageViewScope` 的挂载与否，而不是翻这个开关。
-  bool get observePageView => false;
+  /// 请改用 `FlPageIndexScope` 的挂载与否，而不是翻这个开关。
+  bool get observePageIndex => false;
 
   /// 是否订阅 App 前后台事件，**默认 false**：[onAppForeground] /
   /// [onAppBackground] / [appLifecycleChanged] 与对应的三个 App 枚举事件
@@ -142,10 +149,10 @@ mixin FlPageLifecycleMixin<T extends StatefulWidget> on State<T>
   ///
   /// 用于在异步回调返回时判断「页面还在不在前台」，避免对已 stop 的页面做
   /// 刷新、埋点这类动作。
-  bool get isPageAppeared => _hasAppeared;
+  bool get isPageAppeared => _visibility.isAppeared;
 
   /// 本页当前是否可交互，即已发出 [onPageResume] 且尚未发出 [onPagePause]。
-  bool get isPageResumed => _hasResume;
+  bool get isPageResumed => _visibility.isResumed;
 
   /// 本页是不是**所在 Navigator** 的栈顶路由。实时查询，不缓存。
   ///
@@ -163,8 +170,19 @@ mixin FlPageLifecycleMixin<T extends StatefulWidget> on State<T>
   /// 过滤生命周期事件——那会把非路由页面永久挡死。
   bool get isCurrent => _routeDelegate.isCurrent;
 
-  bool _hasAppeared = false;
-  bool _hasResume = false;
+  /// start / resume / pause / stop 的配对与幂等，规则见 [FlPageVisibilityState]。
+  late final FlPageVisibilityState _visibility = FlPageVisibilityState(
+    onStart: () => _emit(onPageStart, FlLifecycleState.onPageStart),
+    onResume: () => _emit(onPageResume, FlLifecycleState.onPageResume),
+    onPause: () => _emit(onPagePause, FlLifecycleState.onPagePause),
+    onStop: () => _emit(onPageStop, FlLifecycleState.onPageStop),
+    // 没有 `ModalRoute` 的页面 `isCurrent` 恒为 false，所以先判 `isAttached`。
+    isCovered: () => _routeDelegate.isAttached && !_routeDelegate.isCurrent,
+    // 保证 onPagePostFrame 一定早于 start：此时布局与绘制已完成，宿主在
+    // onPageStart 里可以直接用上量到的尺寸。
+    beforeStart: _notifyPostFrame,
+  );
+
   bool _hasDispose = false;
   bool _hasPostFrame = false;
 
@@ -176,22 +194,22 @@ mixin FlPageLifecycleMixin<T extends StatefulWidget> on State<T>
   /// 订阅永不释放。记录「实际做过什么」而不是「现在该做什么」，这条路径就不存在。
   bool _didAttachApp = false;
 
-  /// 是否真的调用过 `_pageViewDelegate.attach()`，理由同 [_didAttachApp]。
-  bool _didAttachPageView = false;
+  /// 是否真的调用过 `_pageIndexDelegate.attach()`，理由同 [_didAttachApp]。
+  bool _didAttachPageIndex = false;
 
   /// 两个开关的首次取值，仅用于 debug 断言，见 [_debugCheckSwitchesStable]。
-  bool? _debugObservePageView;
+  bool? _debugObservePageIndex;
   bool? _debugObserveAppLifecycle;
 
   /// 两个开关都必须在整个生命周期内保持不变，翻转会让可见性状态机对不齐。
   bool _debugCheckSwitchesStable() {
     assert(() {
-      _debugObservePageView ??= observePageView;
+      _debugObservePageIndex ??= observePageIndex;
       _debugObserveAppLifecycle ??= observeAppLifecycle;
       assert(
-        observePageView == _debugObservePageView,
-        'observePageView 在运行时被改成了 $observePageView（初始为 '
-        '$_debugObservePageView）。它必须在整个生命周期内保持不变，'
+        observePageIndex == _debugObservePageIndex,
+        'observePageIndex 在运行时被改成了 $observePageIndex（初始为 '
+        '$_debugObservePageIndex）。它必须在整个生命周期内保持不变，'
         '否则可见性状态机会停在对不齐的中间态。',
       );
       assert(
@@ -219,20 +237,20 @@ mixin FlPageLifecycleMixin<T extends StatefulWidget> on State<T>
         return;
       }
       _notifyPostFrame();
-      _startIfNotInPageView();
+      _startIfNotInPageScope();
     });
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // 判断本页是不是 PageView 的一页：`FlPageViewScope` 是 InheritedWidget，
+    // 判断本页是不是 PageView 的一页：`FlPageIndexScope` 是 InheritedWidget，
     // 这里才是注册依赖的合法时机，Scope 变化（页码调整、控制器被换掉）也能
     // 通过重新进入本方法被感知到。这里只做绑定，不发出任何事件。
     assert(_debugCheckSwitchesStable());
-    if (observePageView) {
-      _didAttachPageView = true;
-      _pageViewDelegate.attach(context);
+    if (observePageIndex) {
+      _didAttachPageIndex = true;
+      _pageIndexDelegate.attach(context);
     }
 
     // 「首次成功才发事件、失败留到下次重试」的语义由委托持有，
@@ -267,21 +285,21 @@ mixin FlPageLifecycleMixin<T extends StatefulWidget> on State<T>
     //
     // 委托关掉时从未被创建过，这里不去碰它——`late final` 一读就会实例化，
     // 只为了调一次空操作的 detach 不值得（列表里放几百个 FlPageLifecycleView 时尤其）。
-    // 用 _didAttachApp / _didAttachPageView 而不是重读开关，理由见字段文档。
+    // 用 _didAttachApp / _didAttachPageIndex 而不是重读开关，理由见字段文档。
     try {
       if (_didAttachApp) {
         _appDelegate.detach();
       }
       // 这里用 _notifyPageStop 而非 _checkNotifyPageStop：页面已经在销毁，
       // 不该再用「是不是 PageView 当前页」去过滤。被滑走的子页在这一刻
-      // isCurrentPage 已经是 false，走 check 会让它带着 _hasAppeared 直接销毁，
-      // 收不到与 onPageStart 配对的 onPageStop。幂等由 _hasAppeared 保证。
+      // isCurrentPage 已经是 false，走 check 会让它带着 appeared 状态直接销毁，
+      // 收不到与 onPageStart 配对的 onPageStop。幂等由 [FlPageVisibilityState.stop] 保证。
       _notifyPageStop();
     } finally {
       try {
         _routeDelegate.detach();
-        if (_didAttachPageView) {
-          _pageViewDelegate.detach();
+        if (_didAttachPageIndex) {
+          _pageIndexDelegate.detach();
         }
         _emit(onPageDispose, FlLifecycleState.onPageDispose);
       } finally {
@@ -329,7 +347,7 @@ mixin FlPageLifecycleMixin<T extends StatefulWidget> on State<T>
   /// 首帧渲染完成后，为**不在 PageView 中**的页面发出 start。
   ///
   /// 位于 PageView 中的页面不走这里——start 要等页码切到本页，由
-  /// [_pageViewDelegate] 回调 [_notifyPageStart]（首页在 `attach` 当场即可
+  /// [_pageIndexDelegate] 回调 [_notifyPageStart]（首页在 `attach` 当场即可
   /// 确定，同样无需等待用户滑动）。
   ///
   /// 之所以留在首帧回调而不是跟着 `attach` 一起放进 `didChangeDependencies`：
@@ -341,15 +359,38 @@ mixin FlPageLifecycleMixin<T extends StatefulWidget> on State<T>
   /// 「本页被 push、同一帧内又被别的路由盖住」时收不到那次 stop（`initialRoute`
   /// 生成多级栈、连续两次 push 都会这样）。不加判断就会给一个从未露面的页面
   /// 发出 start，且没有配对的 stop 来纠正——之后上层被 pop 时发来的 start 会
-  /// 被 `_hasAppeared` 挡掉。
-  void _startIfNotInPageView() {
-    if (observePageView && _pageViewDelegate.isInPageView) {
+  /// 被 `isAppeared` 挡掉。
+  void _startIfNotInPageScope() {
+    if (observePageIndex && _pageIndexDelegate.isInPageScope) {
       return;
     }
     // 只在确实挂到了路由上时才做这个判断：没有 `ModalRoute` 的页面
     // （作为普通子 Widget 嵌入）`isCurrent` 恒为 false，用它挡会永久挡死。
     // 被弹窗盖住而在这里被挡掉的页面，由 [_checkNotifyPageResume] 补发。
-    if (_routeDelegate.isAttached && !_routeDelegate.isCurrent) {
+    if (_visibility.isCovered) {
+      return;
+    }
+    _notifyPageStart();
+  }
+
+  /// PageView 切到本页时的 show，由 [_pageIndexDelegate] 回调。
+  ///
+  /// 与首帧的 [_startIfNotInPageScope] 共用同一道门禁：**已挂到路由上、但本页不是
+  /// 所在 `Navigator` 的栈顶时不发 start**。两处是对称的——「本页所在的那一层
+  /// 露出来了」不等于「本页露出来了」，还要它在自己那条路由栈里也在顶上。
+  ///
+  /// 没有这道门禁，「`PageView` 的一页里装了一条嵌套路由栈」会出错：栈里 push 了
+  /// 第二层之后滑走再滑回，被盖住的第一层也会收到 start——它在划走时被 stop 过、
+  /// `isAppeared` 已经是 false，幂等标志位挡不住。同理，宿主路由被别的路由盖住
+  /// 期间用 `jumpToPage` 换页，换过去的那一页也不该当场 start。
+  ///
+  /// 被挡掉的页不会就此失联：上层 pop 时 [_checkNotifyPageStart] /
+  /// [_checkNotifyPageResume] 会照常补发，它们那一侧的门禁是 [_isCurrentPage]。
+  ///
+  /// 没有 `ModalRoute` 的页面 `isCurrent` 恒为 false，所以先判 `isAttached`——
+  /// 否则会把不在路由里的宿主永久挡死。
+  void _notifyPageIndexShow() {
+    if (_visibility.isCovered) {
       return;
     }
     _notifyPageStart();
@@ -357,10 +398,10 @@ mixin FlPageLifecycleMixin<T extends StatefulWidget> on State<T>
 
   /// 本页是不是「可以接收路由事件」的那一页。
   ///
-  /// 关掉 [observePageView] 时恒为 true，且**短路掉**对委托的访问——
+  /// 关掉 [observePageIndex] 时恒为 true，且**短路掉**对委托的访问——
   /// 否则 `late final` 会在这里被实例化出来，白白抵消掉关开关省下的成本。
   bool get _isCurrentPage =>
-      !observePageView || _pageViewDelegate.isCurrentPage;
+      !observePageIndex || _pageIndexDelegate.isCurrentPage;
 
   void _checkNotifyPageStart() {
     if (!_isCurrentPage) {
@@ -373,19 +414,19 @@ mixin FlPageLifecycleMixin<T extends StatefulWidget> on State<T>
   ///
   /// 尚未 appeared 时走 [_checkNotifyPageStart] 补发 start + resume，而不是
   /// 丢弃：页面可能在首帧就被同一帧 push 的弹窗盖住，被
-  /// [_startIfNotInPageView] 的栈顶判断挡掉了 start，此刻弹窗关闭正是它第一次
+  /// [_startIfNotInPageScope] 的栈顶判断挡掉了 start，此刻弹窗关闭正是它第一次
   /// 真正露面。`_didBecomeVisible` 已保证走到这里时本页确实是栈顶。
   void _checkNotifyPageResume() {
-    if (_hasAppeared) {
-      _notifyPageResume();
+    if (_visibility.isAppeared) {
+      _visibility.resume();
       return;
     }
     _checkNotifyPageStart();
   }
 
   void _checkNotifyPagePause() {
-    if (_hasAppeared) {
-      _notifyPagePause();
+    if (_visibility.isAppeared) {
+      _visibility.pause();
     }
   }
 
@@ -422,42 +463,9 @@ mixin FlPageLifecycleMixin<T extends StatefulWidget> on State<T>
     _emit(onPagePostFrame, FlLifecycleState.onPagePostFrame);
   }
 
-  void _notifyPageStart() {
-    if (_hasAppeared) {
-      return;
-    }
-    // 保证 onPagePostFrame 一定早于 start：此时布局与绘制已完成，宿主在
-    // onPageStart 里可以直接用上量到的尺寸。
-    _notifyPostFrame();
-    _hasAppeared = true;
-    _emit(onPageStart, FlLifecycleState.onPageStart);
-    _notifyPageResume();
-  }
+  void _notifyPageStart() => _visibility.start();
 
-  void _notifyPageResume() {
-    if (_hasResume) {
-      return;
-    }
-    _hasResume = true;
-    _emit(onPageResume, FlLifecycleState.onPageResume);
-  }
-
-  void _notifyPagePause() {
-    if (!_hasResume) {
-      return;
-    }
-    _hasResume = false;
-    _emit(onPagePause, FlLifecycleState.onPagePause);
-  }
-
-  void _notifyPageStop() {
-    if (!_hasAppeared) {
-      return;
-    }
-    _hasAppeared = false;
-    _notifyPagePause();
-    _emit(onPageStop, FlLifecycleState.onPageStop);
-  }
+  void _notifyPageStop() => _visibility.stop();
 
   ///*********************************************
 
@@ -500,7 +508,7 @@ mixin FlPageLifecycleMixin<T extends StatefulWidget> on State<T>
   /// 回到 `forward`，随后是 [onPageEnterAnimationEnd]。
   ///
   /// 与可见性状态机（[onPageStart] / [onPageResume]）无关，
-  /// 不参与 `_hasAppeared` / `_hasResume` 判断，也没有幂等保证。
+  /// 不参与 `isAppeared` / `isResumed` 判断，也没有幂等保证。
   @protected
   void onPageEnterAnimationStart() {}
 
@@ -520,7 +528,12 @@ mixin FlPageLifecycleMixin<T extends StatefulWidget> on State<T>
   /// 入场转场动画播放完毕，详见 [FlLifecycleState.onPageEnterAnimationEnd]。
   ///
   /// 适合把重量级操作（大图解码、复杂列表构建、自动弹出的引导层）推迟到转场
-  /// 结束后执行，避免掉帧。iOS 侧滑返回中途放弃时会重复发出。
+  /// 结束后执行，避免掉帧。
+  ///
+  /// **但本回调可能重复发出**：iOS 侧滑返回拖到一半放弃时，动画走
+  /// `reverse → forward → completed`，`completed` 第二次到达，本回调再触发一次。
+  /// 因此放在这里的网络请求、埋点上报**必须自己做幂等或去重**——否则一个常见的
+  /// iOS 手势就会让它执行两遍。
   @protected
   void onPageEnterAnimationEnd() {}
 
@@ -602,8 +615,8 @@ mixin FlPageLifecycleMixin<T extends StatefulWidget> on State<T>
   /// 只有完整经历过 `paused` 再回来才发出，`inactive → resumed` 这类短暂中断
   /// 会被过滤掉。适合回到前台刷新列表、重新校验登录态、恢复轮询。
   ///
-  /// 需要 [observeAppLifecycle] 为 true 才会发出。另外冷启动的那一次补发只有
-  /// **首个**触发订阅的页面收得到，因此不要用它判断当前在不在前台——那请读
+  /// 需要 [observeAppLifecycle] 为 true 才会发出。页面创建时 App 已在前台的，
+  /// **不会**收到初始事件，因此不要用它判断当前在不在前台——那请读
   /// [isForeground]。
   @protected
   void onAppForeground() {}
@@ -624,17 +637,29 @@ mixin FlPageLifecycleMixin<T extends StatefulWidget> on State<T>
   /// （已标注 `@mustCallSuper`）。
   ///
   /// 不含路由参数与 `PageView` 页码变化——它们不属于 [FlLifecycleState]，
-  /// 分别走 [onPageContextReady] 与 [onPageViewChanged]。
+  /// 分别走 [onPageContextReady] 与 [onPageIndexChanged]。
   @protected
   @mustCallSuper
   void onLifecycleStateChanged(FlLifecycleState state) {}
 
   /// PageView 页码发生变化，参数为 (旧页码, 新页码)。
   ///
-  /// 仅在 [isInPageView] 为 true 时触发，且**首次确定页码时不发出**
-  /// （此时没有「旧页码」）。所有页都会收到，不只是 [pageIndex] 对应的那页。
+  /// 仅在 [isInPageScope] 为 true 时触发，只反映**本页所在那一层**的翻页：嵌套时
+  /// 外层换页不会从这里报出来，要听外层就把宿主挂在外层的 `FlPageIndexScope` 下。
+  ///
+  /// 三条约定：
+  ///
+  /// - **同一对参数**。本层每个已挂载的页收到的 `(from, to)` 完全一致，包括刚
+  ///   切过去的那一页——旧页码记在层上而不是各自页上。已经被移出视口销毁的页自然
+  ///   收不到，需要每页都收就配合 `keepAlive`。
+  /// - **一次报到位**。`animateToPage(0 → 4)` 报的是 `(0, 4)`，不会把途中的
+  ///   1 / 2 / 3 逐级报出来，见 `FlPageIndexScope` 的「提交时机」一节。
+  /// - **不补发**。本层第一次确定页码时不发（没有「旧页码」）；在某次换页
+  ///   **之后**才挂上来的宿主也不会补发那一次——`jumpToPage` 落地后才建出来的
+  ///   新当前页、页面里后插进来的 `FlPageLifecycleView` 都属于这种。要的是
+  ///   「本页成了当前页」这个信号，请用 [onPageStart]，它在这些情形下照常触发。
   @protected
-  void onPageViewChanged(int from, int to) {}
+  void onPageIndexChanged(int from, int to) {}
 
   ///*********************RouteAware 框架路由生命周期，**不允许子类重写***************************
 
